@@ -18,9 +18,6 @@ class IncomingMessage(BaseModel):
 
 def parse_we_event(data: dict) -> IncomingMessage | None:
     """WE API event dict → IncomingMessage. None если событие не нужно сохранять."""
-    if data.get("type") != "google.workspace.chat.message.v1.created":
-        return None
-
     msg = data.get("message", {})
     text = msg.get("text", "").strip()
     if not text:

@@ -44,6 +44,8 @@ async def pubsub_push(request: Request) -> Response:
     data_b64 = msg.get("data", "")
     message_id = msg.get("messageId", "")
 
+    logger.info("pubsub_request", message_id=message_id, has_data=bool(data_b64))
+
     if data_b64:
         try:
             data = json.loads(base64.b64decode(data_b64))

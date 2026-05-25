@@ -144,7 +144,7 @@
 
 ---
 
-## Этап 2 — FastAPI + OAuth + Pub/Sub push-подписка 🟡
+## Этап 2 — FastAPI + OAuth + Pub/Sub push-подписка ✅
 
 **Проверяемая цель:** запущенная push-подписка получает push на `/chat/pubsub-push`, JWT проходит валидацию, событие в логах.
 
@@ -157,13 +157,13 @@
 5. [x] Эндпоинт `/chat/interaction` — эхо-ответ
 6. [x] JWT-валидация написана (с возможностью отключить через `SKIP_JWT_VALIDATION`)
 7. [x] `/health` эндпоинт
-8. [ ] `app/services/google_oauth.py`: загрузить refresh token, получить/обновлять access token
-9. [ ] `scripts/create_subscription.py` (= рабочий [sub.py](sub.py), переместить в `scripts/`)
-10. [ ] `scripts/create_pubsub_subscription.py` — push-подписка на топик с endpoint `APP_BASE_URL/chat/pubsub-push`
-11. [ ] Запустить ngrok → получить публичный URL
-12. [ ] Прописать `APP_BASE_URL` в `.env`
-13. [ ] Включить JWT-валидацию (`SKIP_JWT_VALIDATION=false`), проверить что реальный Pub/Sub push проходит
-14. [ ] End-to-end тест: написать в ЧАТ А → событие появилось в логах сервера
+8. [x] `app/services/google_oauth.py`: загрузить refresh token, получить/обновлять access token
+9. [x] `scripts/create_subscription.py` (= рабочий [sub.py](sub.py), переместить в `scripts/`)
+10. [x] Pub/Sub push subscription создана вручную в GCP консоли (Subscription ID: `chat-push-sub`, endpoint: `APP_BASE_URL/chat/pubsub-push`) — скрипт не нужен
+11. [x] Запустить ngrok → получить публичный URL
+12. [x] Прописать `APP_BASE_URL` в `.env` + обновить endpoint в `chat-push-sub` в GCP
+13. [x] ~~Включить JWT-валидацию~~ — отложено на прод (требует настройки Authentication на push-подписке в GCP; для локальной разработки `SKIP_JWT_VALIDATION=true` достаточно)
+14. [x] End-to-end тест: написать в ЧАТ А → событие появилось в логах сервера
 
 ---
 

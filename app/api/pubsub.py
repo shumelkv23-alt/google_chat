@@ -1,13 +1,15 @@
 import base64
 import json
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import Response
 from google.auth.transport import requests as grequests
 from google.oauth2 import id_token
 
 from app.config import settings
 from app.logger import logger
+from app.schemas.incoming import parse_we_event
+from app.services.ingest import ingest_message
 
 router = APIRouter()
 
@@ -24,7 +26,7 @@ def _verify_pubsub_jwt(authorization: str) -> None:
 
 
 @router.post("/chat/pubsub-push")
-async def pubsub_push(request: Request) -> Response:
+async def pubsub_push(request: Request, background_tasks: BackgroundTasks) -> Response:
     if not settings.skip_jwt_validation:
         try:
             _verify_pubsub_jwt(request.headers.get("Authorization", ""))
@@ -44,13 +46,21 @@ async def pubsub_push(request: Request) -> Response:
     data_b64 = msg.get("data", "")
     message_id = msg.get("messageId", "")
 
-    logger.info("pubsub_request", message_id=message_id, has_data=bool(data_b64))
+    if not data_b64:
+        return Response(status_code=204)
 
-    if data_b64:
-        try:
-            data = json.loads(base64.b64decode(data_b64))
-            logger.info("pubsub_event_received", message_id=message_id, data=data)
-        except Exception as e:
-            logger.error("pubsub_decode_error", error=str(e))
+    try:
+        data = json.loads(base64.b64decode(data_b64))
+    except Exception as e:
+        logger.error("pubsub_decode_error", message_id=message_id, error=str(e))
+        return Response(status_code=204)
+
+    incoming = parse_we_event(data)
+    if incoming is None:
+        logger.info("pubsub_event_skipped", message_id=message_id, type=data.get("type"))
+        return Response(status_code=204)
+
+    logger.info("pubsub_event_received", message_id=message_id, text_chars=len(incoming.text))
+    background_tasks.add_task(ingest_message, incoming)
 
     return Response(status_code=204)

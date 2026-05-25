@@ -1,0 +1,32 @@
+# Секреты
+.env
+.env.local
+token.json
+oauth-credentials.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+pg_data/
+
+# Logs
+*.log

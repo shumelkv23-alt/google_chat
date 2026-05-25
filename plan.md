@@ -1,0 +1,346 @@
+# План реализации: Чат-бот для вакансий
+
+> Версия: 3.0 · Дата: 2026-05-25
+> Источник требований: [docs.md](docs.md)
+
+## Легенда статусов
+
+- ✅ **Готово** — этап полностью завершён
+- 🟡 **Частично** — что-то сделано, что-то нет (смотри галочки внутри)
+- ❌ **Не начато** — нет ни одного шага
+- ⏭️ **Пропущено** — решили не делать сейчас
+
+---
+
+## 📊 Общий прогресс
+
+| # | Этап | Статус | Срок |
+|---|------|--------|------|
+| 0a | GCP-проект + API | ✅ Готово | — |
+| 0b | Pub/Sub топик + права | ✅ Готово | — |
+| 0c | OAuth Client + refresh token | ✅ Готово | — |
+| 0d | Регистрация Chat App | ✅ Готово | — |
+| 0e | ЧАТ А + тестовые сообщения | ✅ Готово | — |
+| 0f | Локальное окружение + ngrok | 🟡 Частично | 1 день |
+| 1 | База данных + миграции | ❌ Не начато | 1 день |
+| 2 | FastAPI + OAuth + Pub/Sub | 🟡 Частично | 2 дня |
+| 3 | Ingest + embeddings | ❌ Не начато | 1.5 дня |
+| 4 | LLM pre-filter + extraction | ❌ Не начато | 2 дня |
+| 5 | Entity resolution + state | ❌ Не начато | 2 дня |
+| 6 | Bot endpoint + RAG | ❌ Не начато | 2-3 дня |
+| 7 | Память диалога + свёртка | ❌ Не начато | 1.5 дня |
+| 8 | Идемпотентность + edit/delete | ❌ Не начато | 2 дня |
+| 9 | Очереди + rate limits + метрики | ❌ Не начато | 2-3 дня |
+| 10 | Тесты + security + доводка | ❌ Не начато | 2-3 дня |
+
+**Контекст:**
+- **LLM stack:** все LLM-задачи через **OpenRouter** (`deepseek/deepseek-v4-flash`). Embeddings — `text-embedding-3-small` через **OpenAI API** напрямую (1536 dim).
+- **Reasoning:** off для pre-filter и extraction, `high` для entity resolution и сложных RAG-вопросов.
+- **Окружение:** локально (Windows) + ngrok для вебхуков → Google.
+- **Бюджет:** разработка ~$5-10, прод ~$20-50/мес при 1000 сообщений/день.
+
+---
+
+# Часть I. Подготовка инфраструктуры
+
+## Этап 0a — GCP-проект и включение API ✅
+
+**Проверяемая цель:** в `gcloud projects list` виден проект, в `gcloud services list --enabled` — все нужные API.
+
+- [x] Создан GCP-проект `vacanciesbot-496815`
+- [x] Привязан биллинг
+- [x] Зафиксирован Project ID
+- [x] Включены API: `chat.googleapis.com`, `workspaceevents.googleapis.com`, `pubsub.googleapis.com`, `iam.googleapis.com`
+
+---
+
+## Этап 0b — Pub/Sub топик и права для WE API ✅
+
+**Проверяемая цель:** топик существует, у WE API сервис-аккаунта есть `pubsub.publisher` на нём.
+
+- [x] Создан топик `projects/vacanciesbot-496815/topics/chat-events-topic`
+- [x] WE API сервис-аккаунт (`chat-api-push@system.gserviceaccount.com`) имеет `pubsub.publisher` на топик
+- [ ] Push-подписка на топик с endpoint `APP_BASE_URL/chat/pubsub-push` ← создаётся в этапе 2
+
+---
+
+## Этап 0c — OAuth Client ID для user-auth ✅
+
+**Проверяемая цель:** есть refresh token, можно получать access token для WE API.
+
+- [x] OAuth consent screen настроен (External, scopes для chat.spaces.readonly + chat.messages.readonly)
+- [x] OAuth Client ID создан (Desktop app)
+- [x] [oauth-credentials.json](oauth-credentials.json) скачан
+- [x] [create_sub.py](create_sub.py) запущен → refresh token получен и сохранён в [token.json](token.json)
+- [ ] `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` прописаны в `.env` ← пока пусто, читаем из token.json
+
+---
+
+## Этап 0d — Регистрация бота (Chat App) ✅
+
+**Проверяемая цель:** бот найден в Google Chat, открывается DM.
+
+- [x] App name: `VacancyBot`
+- [x] Avatar URL, description
+- [x] Functionality: Receive 1:1 messages + Join spaces and group conversations
+- [x] HTTP endpoint URL прописан (`/chat/interaction`)
+- [x] Authentication audience = Project number
+- [x] Visibility настроен
+
+---
+
+## Этап 0e — Создание ЧАТ А и тестовых сообщений ✅
+
+**Проверяемая цель:** пространство существует с тестовыми сообщениями.
+
+- [x] Создано пространство «Вакансии — тест» в threaded-режиме
+- [x] Space ID: `spaces/AAQAmmGOtCo`
+- [x] Накидано 5-10 тестовых сообщений о вакансиях
+- [x] Прописан в `.env` как `CHAT_A_SPACE_ID`
+
+---
+
+## Этап 0f — Локальное окружение и зависимости 🟡
+
+**Проверяемая цель:** `uvicorn app.main:app` отвечает 200 на `/health`; Postgres+Redis healthy; ngrok отдаёт публичный URL.
+
+**Шаги:**
+
+1. [x] Структура проекта `app/` (api, config, logger, main)
+2. [x] Venv с пакетами: fastapi, uvicorn, sqlalchemy, asyncpg, openai, google-auth, structlog, pydantic-settings, cryptography, httpx
+3. [x] Postgres в Docker запущен (`chatbot-pg`, image `pgvector/pgvector:pg16`, порт 5432)
+4. [ ] Redis в Docker (нужен для Celery и dedup — отложен до этапа 3/8)
+5. [ ] `docker-compose.yml` написать (сейчас контейнеры запускаются командой `docker run`)
+6. [x] [.env](.env) с DATABASE_URL + OPENAI_API_KEY
+7. [ ] Заполнить остальные env: OPENROUTER_API_KEY, GCP_PROJECT_NUMBER, GOOGLE_REFRESH_TOKEN, APP_BASE_URL и т.д.
+8. [ ] OpenRouter API-ключ получен, дневной лимит $1-2/день
+9. [ ] Запустить ngrok, прописать URL в Chat App Config и в `.env` как `APP_BASE_URL`
+
+---
+
+# Часть II. Реализация
+
+## Этап 1 — База данных и миграции ❌
+
+**Проверяемая цель:** `alembic upgrade head` создаёт все 5 таблиц с индексами; smoke-тест pgvector проходит.
+
+**Шаги по порядку:**
+
+1. [ ] Установить `alembic`, `pgvector` (Python-привязка)
+2. [ ] Создать `app/db/` с подмодулями: `base.py` (Declarative base), `session.py` (engine, session)
+3. [ ] Описать SQLAlchemy-модели по спеке:
+   - [ ] `ChatMessage` (id, message_id, space_id, thread_id, sender, text, created_time, is_edited, is_deleted)
+   - [ ] `ChatMessageEmbedding` (chat_message_id, embedding `Vector(1536)`)
+   - [ ] `Vacancy` (id, title, role, salary, team, owner, status, embedding `Vector(1536)`, ...)
+   - [ ] `VacancyRevision` (id, vacancy_id, source_message_id, action, changed_field, old_value, new_value, confidence, created_at)
+   - [ ] `Conversation` (user_id, space_id, recent_turns, turns_count, running_summary)
+4. [ ] Инициализировать alembic (`alembic init alembic`)
+5. [ ] Написать миграцию `0001_initial.py`:
+   - [ ] `CREATE EXTENSION IF NOT EXISTS vector;`
+   - [ ] Создание всех таблиц
+   - [ ] Индексы (ivfflat для embedding-полей, btree для message_id, space_id)
+6. [ ] Прогнать `alembic upgrade head` — проверить структуру через `psql`
+7. [ ] Написать `scripts/seed.py` — несколько тестовых строк в `chat_messages` для отладки RAG без Pub/Sub
+8. [ ] Smoke-тест `tests/test_db_smoke.py`: connect, INSERT, ivfflat top-K поиск
+
+---
+
+## Этап 2 — FastAPI + OAuth + Pub/Sub push-подписка 🟡
+
+**Проверяемая цель:** запущенная push-подписка получает push на `/chat/pubsub-push`, JWT проходит валидацию, событие в логах.
+
+**Шаги по порядку:**
+
+1. [x] `app/main.py` + роутеры
+2. [x] `app/config.py` на pydantic-settings — все env-переменные
+3. [x] Логирование через structlog
+4. [x] Эндпоинт `/chat/pubsub-push` — декод envelope + лог
+5. [x] Эндпоинт `/chat/interaction` — эхо-ответ
+6. [x] JWT-валидация написана (с возможностью отключить через `SKIP_JWT_VALIDATION`)
+7. [x] `/health` эндпоинт
+8. [ ] `app/services/google_oauth.py`: загрузить refresh token, получить/обновлять access token
+9. [ ] `scripts/create_subscription.py` (= рабочий [sub.py](sub.py), переместить в `scripts/`)
+10. [ ] `scripts/create_pubsub_subscription.py` — push-подписка на топик с endpoint `APP_BASE_URL/chat/pubsub-push`
+11. [ ] Запустить ngrok → получить публичный URL
+12. [ ] Прописать `APP_BASE_URL` в `.env`
+13. [ ] Включить JWT-валидацию (`SKIP_JWT_VALIDATION=false`), проверить что реальный Pub/Sub push проходит
+14. [ ] End-to-end тест: написать в ЧАТ А → событие появилось в логах сервера
+
+---
+
+## Этап 3 — Ingest endpoint + embeddings ❌
+
+**Проверяемая цель:** пишешь в ЧАТ А → через секунды строка в `chat_messages`, через ещё пару секунд — вектор в `chat_messages_embeddings`.
+
+**Шаги по порядку:**
+
+1. [ ] Установить Celery + Redis-зависимости (`celery[redis]`, `redis`)
+2. [ ] Запустить Redis в Docker
+3. [ ] `app/workers/celery_app.py` — конфиг Celery (broker = Redis)
+4. [ ] `app/schemas/incoming.py` — Pydantic `IncomingMessage` (нормализованный формат WE event)
+5. [ ] Маппинг WE API event → `IncomingMessage` (поля: message_id, space_id, thread_id, sender, text, created_time)
+6. [ ] Идемпотентный INSERT в `chat_messages` через `ON CONFLICT (message_id) DO NOTHING`
+7. [ ] Celery-задача `tasks/embed_message.py`:
+   - [ ] `OpenAI().embeddings.create(model=..., input=text)`
+   - [ ] INSERT в `chat_messages_embeddings`
+8. [ ] В `/chat/pubsub-push` после INSERT → `tasks.embed_message.delay(message_id)`
+9. [ ] Возврат `200 OK` синхронно (Pub/Sub требует быстрый ack ≤ 10 сек)
+10. [ ] Тест: моковый Pub/Sub payload через httpx → строка в БД + вектор
+
+---
+
+## Этап 4 — LLM pre-filter + extraction ❌
+
+**Проверяемая цель:** для «открыли вакансию питониста, 300k» получаем JSON с `action=create` и полями.
+
+**Шаги по порядку:**
+
+1. [ ] `app/llm/client.py` — обёртка над OpenAI SDK с `base_url="https://openrouter.ai/api/v1"`. Функция `chat(role, model, reasoning=None)`.
+2. [ ] `app/llm/prefilter.py`:
+   - [ ] Модель `OPENROUTER_MODEL_PREFILTER`, reasoning OFF
+   - [ ] Промпт «yes/no: это сообщение про вакансию?»
+   - [ ] Return bool
+3. [ ] `app/llm/extractor.py`:
+   - [ ] Модель `OPENROUTER_MODEL_EXTRACT`, reasoning OFF
+   - [ ] Системный + user промпт из [docs.md](docs.md)
+   - [ ] `response_format={"type": "json_object"}`
+   - [ ] Pydantic `ExtractionResult` для валидации
+4. [ ] Celery-задача `tasks/extract_state.py`: prefilter → если yes → extract → передать в resolution (этап 5)
+5. [ ] Retry на 429/500 через `tenacity`
+6. [ ] `tests/test_extractor.py`: 5-10 примеров (create/update/close/none) с мок OpenRouter
+
+---
+
+## Этап 5 — Entity resolution + запись состояния ❌
+
+**Проверяемая цель:** «открыли питониста» → «по питонисту подняли до 350k» → одна вакансия + две ревизии.
+
+**Шаги по порядку:**
+
+1. [ ] `app/services/entity_resolution.py`:
+   - [ ] Embed `entity_ref` через OpenAI embeddings
+   - [ ] SQL: top-5 по `embedding <=> :query` с `1 - distance > 0.75`
+   - [ ] Если кандидатов нет → новая вакансия
+   - [ ] Если есть → LLM-вызов с resolution-промптом
+2. [ ] LLM resolution: модель `OPENROUTER_MODEL_RESOLVE`, **reasoning ON (`high`)**
+3. [ ] Транзакционная логика if/elif:
+   - [ ] `match + confidence ≥ 0.6` → UPDATE vacancies + INSERT revision(update)
+   - [ ] `match=null + action=create` → INSERT vacancy + INSERT revision(create)
+   - [ ] `confidence < 0.6` → INSERT revision(pending), vacancies не трогаем
+4. [ ] Запись `changed_field/old_value/new_value` по дифу
+5. [ ] End-to-end тест: 3 сообщения → правильное состояние таблиц
+
+---
+
+## Этап 6 — Bot endpoint + RAG ❌
+
+**Проверяемая цель:** в DM бота «открыта ли вакансия питониста?» → осмысленный ответ из реальных данных.
+
+**Шаги по порядку:**
+
+1. [ ] Парсинг event types (`MESSAGE`, `ADDED_TO_SPACE`, `REMOVED_FROM_SPACE`) в `/chat/interaction`
+2. [ ] Валидация Google JWT (audience = `CHAT_APP_AUDIENCE`)
+3. [ ] Извлечение `user_id`, `space_id`, `text`; UPSERT в `conversations` при первом обращении
+4. [ ] `app/services/rag.py`:
+   - [ ] Embed запроса (OpenAI)
+   - [ ] Cosine top-K (K=8) по `chat_messages_embeddings`
+   - [ ] Cosine top-3 по `vacancies.embedding`
+   - [ ] Сборка контекста по шаблону из [docs.md](docs.md)
+5. [ ] `app/llm/answerer.py`:
+   - [ ] Модель `OPENROUTER_MODEL_ANSWER`
+   - [ ] Reasoning: off для простых, `high` для «почему/как/какие»
+   - [ ] Промпт «отвечай по контексту, если данных нет — скажи»
+6. [ ] Заменить эхо на ответ от RAG в `/chat/interaction`
+7. [ ] Возврат `{"text": "..."}` синхронно (Google Chat ждёт ≤30 сек)
+8. [ ] Smoke: 5 вопросов разной формы
+
+---
+
+## Этап 7 — Память диалога + свёртка ❌
+
+**Проверяемая цель:** после 12 реплик `recent_turns` = 6 последних, `running_summary` непустой.
+
+**Шаги по порядку:**
+
+1. [ ] После каждого ответа: append в `recent_turns`, `turns_count += 1`
+2. [ ] Если `len(recent_turns) > 10` → планировать Celery-задачу `tasks/summarize_conversation.py`
+3. [ ] Свёртка: модель `OPENROUTER_MODEL_SUMMARIZE`, на вход `existing_summary + old_turns`
+4. [ ] (опционально) `update_user_profile` — извлечь структурные факты в `user_profile`
+5. [ ] Тест: симулировать 15 реплик
+
+---
+
+## Этап 8 — Идемпотентность, edit/delete ❌
+
+**Проверяемая цель:** двойная доставка не дублирует; редактирование пересчитывает embedding и state.
+
+**Шаги по порядку:**
+
+1. [ ] Дедупликация в Redis-сете по `message_id` на 24ч
+2. [ ] `ON CONFLICT` в БД (двойная защита)
+3. [ ] Обработка `MESSAGE_UPDATED`: UPDATE text + флаг `is_edited` + пересчёт пайплайна
+4. [ ] Обработка `MESSAGE_DELETED`: soft-delete (`is_deleted=true`)
+5. [ ] Миграция: добавить `is_deleted`, `is_edited` если не было
+6. [ ] WHERE `is_deleted=false` во всех RAG-запросах
+7. [ ] Идемпотентность extraction: дедуп revisions по `(source_message_id, action)`
+
+---
+
+## Этап 9 — Очереди, rate limits, метрики ❌
+
+**Проверяемая цель:** 100 сообщений подряд не теряются; метрики `embed_lag`, `extract_lag` доступны.
+
+**Шаги по порядку:**
+
+1. [ ] Celery: отдельные queues `embeddings`, `extraction`, `summarization`
+2. [ ] Throttling: token bucket в Redis для OpenRouter и OpenAI отдельно
+3. [ ] Tenacity на 429/500
+4. [ ] Батчинг embeddings: если в очереди ≥ 16 — один OpenAI-вызов
+5. [ ] Prometheus-метрики через `prometheus-fastapi-instrumentator`
+6. [ ] Логи LLM-вызовов: model, prompt hash, tokens_in/out, cost_usd
+7. [ ] Дневной лимит на OpenRouter ($1-2/день для разработки)
+
+---
+
+## Этап 10 — Тесты, безопасность, доводка ❌
+
+**Проверяемая цель:** покрытие ≥ 80%, нет хардкод-секретов, security checklist пройден.
+
+**Шаги по порядку:**
+
+1. [ ] Unit-тесты: extractor / resolution / RAG-сборка с мок OpenRouter
+2. [ ] Integration тесты эндпоинтов через httpx + тестовая БД (testcontainers-postgres)
+3. [ ] E2E сценарии: ingest → extraction → bot question → answer
+4. [ ] Pre-commit: ruff + black + mypy + bandit
+5. [ ] Row-level security для `conversations` по user_id
+6. [ ] Проверка на startup, что все обязательные env заданы
+7. [ ] README с инструкцией поднятия
+
+---
+
+# Сводная оценка
+
+| Этап | Срок | Критический? |
+|---|---|---|
+| **0a-0f.** GCP, бот, OAuth, ngrok, локалка | 1 день | **да** |
+| 1. БД | 1 д | да |
+| 2. FastAPI + OAuth + Pub/Sub | 2 д | да |
+| 3. Ingest + embeddings | 1.5 д | да |
+| 4. Pre-filter + extraction | 2 д | да |
+| 5. Resolution + state | 2 д | да |
+| 6. Bot + RAG | 2-3 д | да |
+| 7. Память + свёртка | 1.5 д | да |
+| 8. Идемпотентность + edit/delete | 2 д | средне |
+| 9. Очереди + rate limits + метрики | 2-3 д | средне |
+| 10. Тесты + security | 2-3 д | да |
+| **Итого** | **~19-23 рабочих дня (4-4.5 недели)** | |
+
+---
+
+# Вынесено за скобки
+
+- ⏭️ Замена LLM pre-filter на distilbert/fasttext (после первых метрик)
+- ⏭️ Cloud Tasks вместо Celery (только при переезде на Cloud Run)
+- ⏭️ Шифрование колонок в `conversations` (RLS на старте достаточно)
+- ⏭️ Дневные саммари тредов
+- ⏭️ Переход с OpenAI embeddings на Voyage `voyage-3-lite`

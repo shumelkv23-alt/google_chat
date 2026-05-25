@@ -21,8 +21,8 @@
 | 0c | OAuth Client + refresh token | ✅ Готово | — |
 | 0d | Регистрация Chat App | ✅ Готово | — |
 | 0e | ЧАТ А + тестовые сообщения | ✅ Готово | — |
-| 0f | Локальное окружение + ngrok | 🟡 Частично | 1 день |
-| 1 | База данных + миграции | ❌ Не начато | 1 день |
+| 0f | Локальное окружение + ngrok | 🟡 Частично (~ngrok) | 1 день |
+| 1 | База данных + миграции | ✅ Готово | 1 день |
 | 2 | FastAPI + OAuth + Pub/Sub | 🟡 Частично | 2 дня |
 | 3 | Ingest + embeddings | ❌ Не начато | 1.5 дня |
 | 4 | LLM pre-filter + extraction | ❌ Не начато | 2 дня |
@@ -109,39 +109,38 @@
 1. [x] Структура проекта `app/` (api, config, logger, main)
 2. [x] Venv с пакетами: fastapi, uvicorn, sqlalchemy, asyncpg, openai, google-auth, structlog, pydantic-settings, cryptography, httpx
 3. [x] Postgres в Docker запущен (`chatbot-pg`, image `pgvector/pgvector:pg16`, порт 5432)
-4. [ ] Redis в Docker (нужен для Celery и dedup — отложен до этапа 3/8)
-5. [ ] `docker-compose.yml` написать (сейчас контейнеры запускаются командой `docker run`)
-6. [x] [.env](.env) с DATABASE_URL + OPENAI_API_KEY
-7. [ ] Заполнить остальные env: OPENROUTER_API_KEY, GCP_PROJECT_NUMBER, GOOGLE_REFRESH_TOKEN, APP_BASE_URL и т.д.
-8. [ ] OpenRouter API-ключ получен, дневной лимит $1-2/день
-9. [ ] Запустить ngrok, прописать URL в Chat App Config и в `.env` как `APP_BASE_URL`
+4. [x] Redis в Docker (`chatbot-redis` healthy через docker-compose)
+5. [x] `docker-compose.yml` написан (Postgres + Redis)
+6. [x] [.env](.env) заполнен: DATABASE_URL, OPENAI_API_KEY, OPENROUTER_API_KEY, GCP_PROJECT_NUMBER, GOOGLE_REFRESH_TOKEN, GOOGLE_CLIENT_ID/SECRET, CHAT_A_SPACE_ID
+7. [x] OpenRouter API-ключ получен
+8. [ ] Запустить ngrok, прописать URL в Chat App Config и в `.env` как `APP_BASE_URL` ← единственный незакрытый шаг
 
 ---
 
 # Часть II. Реализация
 
-## Этап 1 — База данных и миграции ❌
+## Этап 1 — База данных и миграции ✅
 
 **Проверяемая цель:** `alembic upgrade head` создаёт все 5 таблиц с индексами; smoke-тест pgvector проходит.
 
 **Шаги по порядку:**
 
-1. [ ] Установить `alembic`, `pgvector` (Python-привязка)
-2. [ ] Создать `app/db/` с подмодулями: `base.py` (Declarative base), `session.py` (engine, session)
-3. [ ] Описать SQLAlchemy-модели по спеке:
-   - [ ] `ChatMessage` (id, message_id, space_id, thread_id, sender, text, created_time, is_edited, is_deleted)
-   - [ ] `ChatMessageEmbedding` (chat_message_id, embedding `Vector(1536)`)
-   - [ ] `Vacancy` (id, title, role, salary, team, owner, status, embedding `Vector(1536)`, ...)
-   - [ ] `VacancyRevision` (id, vacancy_id, source_message_id, action, changed_field, old_value, new_value, confidence, created_at)
-   - [ ] `Conversation` (user_id, space_id, recent_turns, turns_count, running_summary)
-4. [ ] Инициализировать alembic (`alembic init alembic`)
-5. [ ] Написать миграцию `0001_initial.py`:
-   - [ ] `CREATE EXTENSION IF NOT EXISTS vector;`
-   - [ ] Создание всех таблиц
-   - [ ] Индексы (ivfflat для embedding-полей, btree для message_id, space_id)
-6. [ ] Прогнать `alembic upgrade head` — проверить структуру через `psql`
-7. [ ] Написать `scripts/seed.py` — несколько тестовых строк в `chat_messages` для отладки RAG без Pub/Sub
-8. [ ] Smoke-тест `tests/test_db_smoke.py`: connect, INSERT, ivfflat top-K поиск
+1. [x] Установить `alembic`, `pgvector` (Python-привязка)
+2. [x] Создать `app/db/` с подмодулями: `base.py` (Declarative base), `session.py` (engine, session)
+3. [x] Описать SQLAlchemy-модели по спеке:
+   - [x] `ChatMessage` (id, message_id, space_id, thread_id, author_id, author_name, text, created_at, received_at, source)
+   - [x] `ChatMessageEmbedding` (message_id FK, embedding `Vector(1536)`, model)
+   - [x] `Vacancy` (id, title, status, salary_min/max, currency, owner, team, description, last_message_id, embedding, confidence)
+   - [x] `VacancyRevision` (vacancy_id, action, changed_field, old_value, new_value, source_message_id, confidence)
+   - [x] `Conversation` (user_id, space_id, running_summary, recent_turns, user_profile, turns_count)
+4. [x] Инициализировать alembic (`alembic init -t async alembic`)
+5. [x] Написать миграцию `0001_initial.py`:
+   - [x] `CREATE EXTENSION IF NOT EXISTS vector;`
+   - [x] Создание всех 5 таблиц
+   - [x] Индексы (ivfflat для embedding-полей, btree для space_id+created_at, thread_id, author_id, status)
+6. [x] Прогнать `alembic upgrade head` — структура проверена через `psql`
+7. [x] Написать `scripts/seed.py` — 8 тестовых строк в `chat_messages` (засеяно)
+8. [x] Smoke-тест `tests/test_db_smoke.py`: INSERT + ivfflat top-K поиск, score=1.0
 
 ---
 

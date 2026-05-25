@@ -9,6 +9,7 @@ from google.oauth2 import id_token
 from app.config import settings
 from app.logger import logger
 from app.schemas.incoming import parse_we_event
+from app.services.extraction import run_extraction
 from app.services.ingest import ingest_message
 
 router = APIRouter()
@@ -62,5 +63,6 @@ async def pubsub_push(request: Request, background_tasks: BackgroundTasks) -> Re
 
     logger.info("pubsub_event_received", message_id=message_id, text_chars=len(incoming.text))
     background_tasks.add_task(ingest_message, incoming)
+    background_tasks.add_task(run_extraction, incoming)
 
     return Response(status_code=204)

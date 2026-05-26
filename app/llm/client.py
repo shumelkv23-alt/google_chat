@@ -14,10 +14,13 @@ async def chat(
     messages: list[dict],
     model: str,
     response_format: dict | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     kwargs: dict = {}
     if response_format:
         kwargs["response_format"] = response_format
+    if reasoning_effort:
+        kwargs["extra_body"] = {"reasoning": {"effort": reasoning_effort}}
 
     response = await _client.chat.completions.create(
         model=model,

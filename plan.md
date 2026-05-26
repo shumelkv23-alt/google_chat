@@ -24,9 +24,9 @@
 | 0f | Локальное окружение + ngrok | 🟡 Частично (~ngrok) | 1 день |
 | 1 | База данных + миграции | ✅ Готово | 1 день |
 | 2 | FastAPI + OAuth + Pub/Sub | 🟡 Частично | 2 дня |
-| 3 | Ingest + embeddings | ❌ Не начато | 1.5 дня |
-| 4 | LLM pre-filter + extraction | ❌ Не начато | 2 дня |
-| 5 | Entity resolution + state | ❌ Не начато | 2 дня |
+| 3 | Ingest + embeddings | ✅ Готово | 1.5 дня |
+| 4 | LLM pre-filter + extraction | ✅ Готово | 2 дня |
+| 5 | Entity resolution + state | ✅ Готово | 2 дня |
 | 6 | Bot endpoint + RAG | ❌ Не начато | 2-3 дня |
 | 7 | Память диалога + свёртка | ❌ Не начато | 1.5 дня |
 | 8 | Идемпотентность + edit/delete | ❌ Не начато | 2 дня |
@@ -167,67 +167,69 @@
 
 ---
 
-## Этап 3 — Ingest endpoint + embeddings ❌
+## Этап 3 — Ingest endpoint + embeddings ✅
 
 **Проверяемая цель:** пишешь в ЧАТ А → через секунды строка в `chat_messages`, через ещё пару секунд — вектор в `chat_messages_embeddings`.
 
+> ⚠️ Celery заменён на FastAPI `BackgroundTasks` (пп. 1-3, 7 — пропущены как ненужные).
+
 **Шаги по порядку:**
 
-1. [ ] Установить Celery + Redis-зависимости (`celery[redis]`, `redis`)
-2. [ ] Запустить Redis в Docker
-3. [ ] `app/workers/celery_app.py` — конфиг Celery (broker = Redis)
-4. [ ] `app/schemas/incoming.py` — Pydantic `IncomingMessage` (нормализованный формат WE event)
-5. [ ] Маппинг WE API event → `IncomingMessage` (поля: message_id, space_id, thread_id, sender, text, created_time)
-6. [ ] Идемпотентный INSERT в `chat_messages` через `ON CONFLICT (message_id) DO NOTHING`
-7. [ ] Celery-задача `tasks/embed_message.py`:
-   - [ ] `OpenAI().embeddings.create(model=..., input=text)`
-   - [ ] INSERT в `chat_messages_embeddings`
-8. [ ] В `/chat/pubsub-push` после INSERT → `tasks.embed_message.delay(message_id)`
-9. [ ] Возврат `200 OK` синхронно (Pub/Sub требует быстрый ack ≤ 10 сек)
-10. [ ] Тест: моковый Pub/Sub payload через httpx → строка в БД + вектор
+1. [x] ~~Установить Celery + Redis-зависимости~~ → используется `BackgroundTasks`
+2. [x] ~~Запустить Redis в Docker~~ → Redis уже есть в `docker-compose.yml`
+3. [x] ~~`app/workers/celery_app.py`~~ → не нужен
+4. [x] `app/schemas/incoming.py` — Pydantic `IncomingMessage` (нормализованный формат WE event)
+5. [x] Маппинг WE API event → `IncomingMessage` (`parse_we_event`)
+6. [x] Идемпотентный INSERT в `chat_messages` через `ON CONFLICT (message_id) DO NOTHING`
+7. [x] Embedding инлайн в `ingest_message`: `OpenAI().embeddings.create(...)` + INSERT в `chat_messages_embeddings`
+8. [x] В `/chat/pubsub-push` → `background_tasks.add_task(ingest_message, incoming)`
+9. [x] Возврат `204` синхронно (Pub/Sub требует быстрый ack ≤ 10 сек)
+10. [x] `tests/test_ingest.py`: моковый Pub/Sub payload → строка в БД + вектор
 
 ---
 
-## Этап 4 — LLM pre-filter + extraction ❌
+## Этап 4 — LLM pre-filter + extraction ✅
 
 **Проверяемая цель:** для «открыли вакансию питониста, 300k» получаем JSON с `action=create` и полями.
 
+> ⚠️ Celery-задача заменена на async-функцию с `BackgroundTasks` (п. 4). Tenacity не добавлен (п. 5).
+
 **Шаги по порядку:**
 
-1. [ ] `app/llm/client.py` — обёртка над OpenAI SDK с `base_url="https://openrouter.ai/api/v1"`. Функция `chat(role, model, reasoning=None)`.
-2. [ ] `app/llm/prefilter.py`:
-   - [ ] Модель `OPENROUTER_MODEL_PREFILTER`, reasoning OFF
-   - [ ] Промпт «yes/no: это сообщение про вакансию?»
-   - [ ] Return bool
-3. [ ] `app/llm/extractor.py`:
-   - [ ] Модель `OPENROUTER_MODEL_EXTRACT`, reasoning OFF
-   - [ ] Системный + user промпт из [docs.md](docs.md)
-   - [ ] `response_format={"type": "json_object"}`
-   - [ ] Pydantic `ExtractionResult` для валидации
-4. [ ] Celery-задача `tasks/extract_state.py`: prefilter → если yes → extract → передать в resolution (этап 5)
-5. [ ] Retry на 429/500 через `tenacity`
-6. [ ] `tests/test_extractor.py`: 5-10 примеров (create/update/close/none) с мок OpenRouter
+1. [x] `app/llm/client.py` — обёртка над OpenAI SDK с `base_url="https://openrouter.ai/api/v1"`. Функция `chat(messages, model, response_format)`.
+2. [x] `app/llm/prefilter.py`:
+   - [x] Модель `OPENROUTER_MODEL_PREFILTER`, reasoning OFF
+   - [x] Промпт «yes/no: это сообщение про вакансию?»
+   - [x] Return bool
+3. [x] `app/llm/extractor.py`:
+   - [x] Модель `OPENROUTER_MODEL_EXTRACT`, reasoning OFF
+   - [x] Системный + user промпт
+   - [x] `response_format={"type": "json_object"}`
+   - [x] Pydantic `ExtractionResult` для валидации
+4. [x] `app/services/extraction.py` (`run_extraction`): prefilter → если yes → extract → лог результата
+5. [ ] Retry на 429/500 через `tenacity` ← не реализован
+6. [x] `tests/test_extractor.py`: примеры (create/update/close/none) с мок OpenRouter
 
 ---
 
-## Этап 5 — Entity resolution + запись состояния ❌
+## Этап 5 — Entity resolution + запись состояния ✅
 
 **Проверяемая цель:** «открыли питониста» → «по питонисту подняли до 350k» → одна вакансия + две ревизии.
 
 **Шаги по порядку:**
 
-1. [ ] `app/services/entity_resolution.py`:
-   - [ ] Embed `entity_ref` через OpenAI embeddings
-   - [ ] SQL: top-5 по `embedding <=> :query` с `1 - distance > 0.75`
-   - [ ] Если кандидатов нет → новая вакансия
-   - [ ] Если есть → LLM-вызов с resolution-промптом
-2. [ ] LLM resolution: модель `OPENROUTER_MODEL_RESOLVE`, **reasoning ON (`high`)**
-3. [ ] Транзакционная логика if/elif:
-   - [ ] `match + confidence ≥ 0.6` → UPDATE vacancies + INSERT revision(update)
-   - [ ] `match=null + action=create` → INSERT vacancy + INSERT revision(create)
-   - [ ] `confidence < 0.6` → INSERT revision(pending), vacancies не трогаем
-4. [ ] Запись `changed_field/old_value/new_value` по дифу
-5. [ ] End-to-end тест: 3 сообщения → правильное состояние таблиц
+1. [x] `app/services/entity_resolution.py`:
+   - [x] Embed `entity_ref` через OpenAI embeddings
+   - [x] SQL: top-5 по `embedding <=> :query` с `1 - distance > 0.75`
+   - [x] Если кандидатов нет → новая вакансия
+   - [x] Если есть → LLM-вызов с resolution-промптом
+2. [x] `app/llm/resolver.py`: модель `OPENROUTER_MODEL_RESOLVE`, **reasoning ON (`high`)**
+3. [x] Транзакционная логика if/elif:
+   - [x] `match + confidence ≥ 0.6` → UPDATE vacancies + INSERT revision(update/close)
+   - [x] `match=null + action=create` → INSERT vacancy + INSERT revision(create)
+   - [x] `confidence < 0.6` → INSERT revision(pending), vacancies не трогаем
+4. [x] Запись `changed_field/old_value/new_value` по дифу (JSON в Text-полях)
+5. [x] `tests/test_resolution.py`: create → update → close + pending (2 теста, 16 pass)
 
 ---
 

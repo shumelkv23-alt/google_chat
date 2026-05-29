@@ -1,9 +1,3 @@
-"""Smoke-тест БД: connect, INSERT, cosine top-K через ivfflat.
-
-Запуск (контейнер chatbot-pg должен быть запущен):
-    python -m pytest tests/test_db_smoke.py -v
-"""
-
 import asyncio
 from datetime import datetime, timezone
 

@@ -1,5 +1,3 @@
-"""Пре-фильтр: быстрая проверка, содержит ли сообщение информацию о вакансии."""
-
 from app.config import settings
 from app.llm.client import chat
 

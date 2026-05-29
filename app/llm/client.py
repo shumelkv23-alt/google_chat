@@ -1,5 +1,3 @@
-"""Обёртка над OpenAI SDK с base_url на OpenRouter."""
-
 from openai import AsyncOpenAI
 
 from app.config import settings

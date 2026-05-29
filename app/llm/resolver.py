@@ -1,5 +1,3 @@
-"""LLM entity resolution: сопоставляет entity_ref с существующими вакансиями."""
-
 import json
 
 from pydantic import BaseModel

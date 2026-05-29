@@ -1,7 +1,4 @@
 """Integration-тест ingest pipeline: Pub/Sub payload → chat_messages + embedding.
-
-Запуск (контейнер chatbot-pg должен быть запущен):
-    python -m pytest tests/test_ingest.py -v
 """
 
 import asyncio
@@ -40,11 +37,30 @@ def test_parse_we_event() -> None:
     assert msg.thread_id == "spaces/TEST/threads/thread-1"
     assert msg.author_id == "users/test-user"
     assert msg.source == "chat_a"
+    assert msg.event_type == "created"
 
 
-def test_parse_we_event_skips_non_created() -> None:
-    data = {**_WE_EVENT, "type": "google.workspace.chat.message.v1.deleted"}
+def test_parse_we_event_skips_unknown_type() -> None:
+    data = {**_WE_EVENT, "type": "google.workspace.chat.something.else"}
     assert parse_we_event(data) is None
+
+
+def test_parse_we_event_updated() -> None:
+    data = {**_WE_EVENT, "type": "google.workspace.chat.message.v1.updated"}
+    msg = parse_we_event(data)
+    assert msg is not None
+    assert msg.event_type == "updated"
+
+
+def test_parse_we_event_deleted_allows_empty_text() -> None:
+    data = {
+        "type": "google.workspace.chat.message.v1.deleted",
+        "message": {"name": _FAKE_MSG_ID},  # у deleted текста может не быть
+    }
+    msg = parse_we_event(data)
+    assert msg is not None
+    assert msg.event_type == "deleted"
+    assert msg.message_id == _FAKE_MSG_ID
 
 
 def test_parse_we_event_skips_empty_text() -> None:
@@ -72,7 +88,6 @@ async def _run_ingest() -> None:
         mock_openai.embeddings.create = AsyncMock(return_value=mock_resp)
         await ingest_message(msg)
 
-        # дубль — должен молча пропустить
         await ingest_message(msg)
 
     async with AsyncSessionLocal() as session:
@@ -93,7 +108,6 @@ async def _run_ingest() -> None:
         ).scalar_one()
         assert len(emb.embedding) == 1536
 
-    # cleanup
     async with AsyncSessionLocal() as session:
         await session.execute(
             text("DELETE FROM chat_messages WHERE message_id = :mid"),

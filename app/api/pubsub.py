@@ -9,6 +9,7 @@ from google.oauth2 import id_token
 from app.config import settings
 from app.logger import logger
 from app.schemas.incoming import parse_we_event
+from app.services.edits import handle_delete, handle_edit
 from app.services.extraction import run_extraction
 from app.services.ingest import ingest_message
 
@@ -18,7 +19,6 @@ _google_request = grequests.Request()
 
 
 def _verify_pubsub_jwt(authorization: str) -> None:
-    """Проверяет JWT от Pub/Sub push-подписки."""
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     token = authorization[len("Bearer "):]
@@ -61,8 +61,19 @@ async def pubsub_push(request: Request, background_tasks: BackgroundTasks) -> Re
         logger.info("pubsub_event_skipped", message_id=message_id, type=data.get("type"))
         return Response(status_code=204)
 
-    logger.info("pubsub_event_received", message_id=message_id, text_chars=len(incoming.text))
-    background_tasks.add_task(ingest_message, incoming)
-    background_tasks.add_task(run_extraction, incoming)
+    logger.info(
+        "pubsub_event_received",
+        message_id=message_id,
+        type=incoming.event_type,
+        text_chars=len(incoming.text),
+    )
+
+    if incoming.event_type == "created":
+        background_tasks.add_task(ingest_message, incoming)
+        background_tasks.add_task(run_extraction, incoming)
+    elif incoming.event_type == "updated":
+        background_tasks.add_task(handle_edit, incoming)
+    elif incoming.event_type == "deleted":
+        background_tasks.add_task(handle_delete, incoming)
 
     return Response(status_code=204)

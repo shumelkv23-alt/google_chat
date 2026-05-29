@@ -43,6 +43,12 @@ class ChatMessage(Base):
         TIMESTAMP(timezone=True), server_default=sa.text("NOW()")
     )
     source: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.text("false")
+    )
+    is_edited: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.text("false")
+    )
 
     __table_args__ = (
         sa.CheckConstraint("source IN ('chat_a', 'chat_b')", name="chat_messages_source_check"),
@@ -88,6 +94,9 @@ class Vacancy(Base):
     )
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
     confidence: Mapped[float | None] = mapped_column(sa.Float)
+    is_deleted: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=sa.text("NOW()")
     )
@@ -134,6 +143,15 @@ class VacancyRevision(Base):
             sa.text("created_at DESC"),
         ),
         sa.Index("ix_vacancy_revisions_source", "source_message_id"),
+        # Идемпотентность: одно сообщение не даёт двух ревизий одного действия.
+        # Частичный — source_message_id nullable (pending/системные без источника).
+        sa.Index(
+            "uq_vacancy_revisions_source_action",
+            "source_message_id",
+            "action",
+            unique=True,
+            postgresql_where=sa.text("source_message_id IS NOT NULL"),
+        ),
     )
 
 

@@ -43,18 +43,54 @@ _FIELD_MAP = {
 
 
 async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> None:
-    """Главный вход: embed entity_ref → подобрать кандидатов → решить → записать."""
+    """Главный вход: reply в тред вакансии → прямая привязка; иначе embed + резолвер."""
+    if result.action == "none":
+        logger.info("resolution_skipped_none", message_id=msg.message_id)
+        return
+
+    msg_uuid = await _get_message_uuid(msg.message_id)
+
+    # Прямая привязка по структурному сигналу — сильнее эмбеддинга/резолвера, т.к.
+    # пользователь сам указал, к чему относится follow-up («поднимаем до 2000»):
+    #   1) quoted reply (цитата) → вакансия процитированного сообщения;
+    #   2) reply в тред, уже принадлежащий вакансии.
+    # Цитата приоритетнее треда: это явное указание на конкретное сообщение.
+    anchor_id: uuid.UUID | None = None
+    via: str | None = None
+    if msg.quoted_message_id:
+        anchor_id = await _find_quoted_vacancy(msg.quoted_message_id)
+        via = "quoted"
+    if anchor_id is None and msg.thread_id:
+        anchor_id = await _find_thread_vacancy(msg.thread_id)
+        via = "thread"
+
+    if anchor_id is not None:
+        # create поверх существующей вакансии — это дополнение, а не дубль.
+        effective_action = "update" if result.action == "create" else result.action
+        async with AsyncSessionLocal() as session:
+            async with session.begin():
+                # embedding=None: entity_ref экстрактора тут ненадёжен — вектор не трогаем.
+                title = await _update_vacancy(
+                    session, anchor_id, result, effective_action, None, msg_uuid
+                )
+        logger.info(
+            "resolution_anchor_match",
+            message_id=msg.message_id,
+            vacancy=title,
+            action=effective_action,
+            via=via,
+        )
+        return
+
     entity_ref = result.entity_ref or result.fields.get("title", "")
-    if result.action == "none" or not entity_ref:
+    if not entity_ref:
         logger.info(
             "resolution_skipped_no_ref", message_id=msg.message_id, action=result.action
         )
         return
 
     ref_vector = await _embed(entity_ref)
-    msg_uuid = await _get_message_uuid(msg.message_id)
 
-    
     candidates = await _find_candidates(ref_vector, threshold=_SIMILARITY_THRESHOLD)
 
     
@@ -177,6 +213,57 @@ async def _get_message_uuid(message_id: str) -> uuid.UUID | None:
         ).scalar_one_or_none()
 
 
+async def _find_quoted_vacancy(quoted_message_id: str) -> uuid.UUID | None:
+    """Вакансия процитированного сообщения (quoted reply).
+
+    Пользователь ответил цитатой на конкретное сообщение — это явное указание, к
+    чему относится follow-up. Берём живую не-закрытую вакансию, к которой привязано
+    процитированное сообщение (по самой свежей его ревизии).
+    """
+    sql = text(
+        """
+        SELECT vr.vacancy_id
+        FROM vacancy_revisions vr
+        JOIN chat_messages cm ON cm.id = vr.source_message_id
+        JOIN vacancies v ON v.id = vr.vacancy_id
+        WHERE cm.message_id = :qmid
+          AND v.is_deleted = false
+          AND v.status != 'closed'
+        ORDER BY vr.created_at DESC
+        LIMIT 1
+        """
+    )
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(sql, {"qmid": quoted_message_id})).first()
+    return row[0] if row else None
+
+
+async def _find_thread_vacancy(thread_id: str) -> uuid.UUID | None:
+    """Вакансия, к которой уже привязан тред (по source-сообщениям её ревизий).
+
+    Reply в тред — сильнейший сигнал принадлежности к позиции. Берём самую свежую
+    по ревизиям живую не-закрытую вакансию, чьи ревизии ссылаются на сообщения
+    этого треда.
+    """
+    sql = text(
+        """
+        SELECT vr.vacancy_id
+        FROM vacancy_revisions vr
+        JOIN chat_messages cm ON cm.id = vr.source_message_id
+        JOIN vacancies v ON v.id = vr.vacancy_id
+        WHERE cm.thread_id = :thread_id
+          AND v.is_deleted = false
+          AND v.status != 'closed'
+        GROUP BY vr.vacancy_id
+        ORDER BY MAX(vr.created_at) DESC
+        LIMIT 1
+        """
+    )
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(sql, {"thread_id": thread_id})).first()
+    return row[0] if row else None
+
+
 async def _find_candidates(
     vector: list[float], threshold: float | None
 ) -> list[dict]:
@@ -244,6 +331,7 @@ async def _create_vacancy(
         source_message_id=msg_uuid,
         confidence=result.confidence,
     )
+    return vac.title
 
 
 async def _update_vacancy(
@@ -251,9 +339,10 @@ async def _update_vacancy(
     vacancy_id: uuid.UUID,
     result: ExtractionResult,
     effective_action: str,
-    embedding: list[float],
+    embedding: list[float] | None,
     msg_uuid: uuid.UUID | None,
-) -> None:
+) -> str:
+    """Применить правку к вакансии. Возвращает её title (для читаемых логов)."""
     vac = (
         await session.execute(select(Vacancy).where(Vacancy.id == vacancy_id))
     ).scalar_one()
@@ -279,8 +368,10 @@ async def _update_vacancy(
 
     vac.last_message_id = msg_uuid
     vac.confidence = result.confidence
-    # Обновляем embedding только если позиция всё ещё активна — иначе теряем индекс для close-ревизии.
-    if effective_action != "close":
+    # Обновляем embedding только если позиция активна И вектор передан. При close
+    # сохраняем старый (нужен для close-ревизии); при thread-match embedding=None
+    # (entity_ref мог быть мусорным) — тоже не трогаем.
+    if effective_action != "close" and embedding is not None:
         vac.embedding = embedding
     vac.updated_at = datetime.now(timezone.utc)
 

@@ -16,6 +16,7 @@ _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 
 _CONTEXT_LIMIT = 7
 _EXTRACTOR_SPACE_FALLBACK = 3
+_MERGED_CONTEXT_LIMIT = 10
 _OPEN_VACANCIES_K = 3
 
 
@@ -25,42 +26,78 @@ async def _fetch_recent(*, scope: str, scope_id: str, exclude_msg_id: str) -> li
     async with AsyncSessionLocal() as session:
         rows = (
             await session.execute(
-                select(ChatMessage.author_name, ChatMessage.text)
+                select(
+                    ChatMessage.message_id,
+                    ChatMessage.author_name,
+                    ChatMessage.text,
+                    ChatMessage.created_at,
+                )
                 .where(column == scope_id, ChatMessage.message_id != exclude_msg_id)
                 .order_by(ChatMessage.created_at.desc())
                 .limit(_CONTEXT_LIMIT)
             )
         ).fetchall()
-    return [{"author_name": r.author_name, "text": r.text} for r in reversed(rows)]
+    return [
+        {
+            "message_id": r.message_id,
+            "author_name": r.author_name,
+            "text": r.text,
+            "created_at": r.created_at,
+        }
+        for r in reversed(rows)
+    ]
+
+
+def _merge_recent(thread_ctx: list[dict], space_ctx: list[dict]) -> list[dict]:
+    """Слить тред (точная ветка reply) и space-фон в одно окно по времени.
+
+    Дедуп по message_id (сообщения треда лежат и в space), сортировка по времени,
+    обрезка до _MERGED_CONTEXT_LIMIT. Нужно, чтобы extractor видел и узкую ветку
+    follow-up'ов, и соседние сообщения из других тредов (напр. объявление вакансии,
+    к которому относится безымянная зарплата вроде «теперь 2000»).
+    """
+    by_id: dict[str, dict] = {}
+    for m in (*space_ctx, *thread_ctx):
+        by_id[m["message_id"]] = m
+    merged = sorted(by_id.values(), key=lambda m: m["created_at"])
+    return merged[-_MERGED_CONTEXT_LIMIT:]
 
 
 async def _build_contexts(msg: IncomingMessage) -> tuple[list[dict], list[dict]]:
     """Возвращает (extractor_context, prefilter_context).
 
-    Если есть содержательный тред — используем его (точный контекст).
-    Если треда нет (Google Chat в threaded-режиме каждое «новое» сообщение
-    кладёт в свой тред — типичная ситуация для follow-up'ов вида «зп от 2000»),
-    даём extractor'у узкое окно последних сообщений из space — лучше так,
-    чем извлекать поля из голого текста без контекста.
-    """
-    if msg.thread_id:
-        thread_ctx = await _fetch_recent(
-            scope="thread", scope_id=msg.thread_id, exclude_msg_id=msg.message_id
-        )
-        if thread_ctx:
-            return thread_ctx, thread_ctx
+    space_ctx — окно последних сообщений пространства по времени (для prefilter и
+    как «фон»). Если сообщение в непустом треде (есть ветка reply) — подмешиваем
+    тред к space-фону: extractor видит и точную ветку follow-up'ов, и соседние
+    сообщения из других тредов (напр. объявление вакансии, к которому относится
+    безымянная зарплата).
 
+    Одиночное сообщение в своём треде (типично для нового объявления в threaded-
+    режиме) — узкое окно space, как раньше: своего контекста у него нет.
+    """
     space_ctx = await _fetch_recent(
         scope="space", scope_id=msg.space_id, exclude_msg_id=msg.message_id
     )
-    return space_ctx[-_EXTRACTOR_SPACE_FALLBACK:], space_ctx
+    if not msg.thread_id:
+        return space_ctx[-_EXTRACTOR_SPACE_FALLBACK:], space_ctx
+
+    thread_ctx = await _fetch_recent(
+        scope="thread", scope_id=msg.thread_id, exclude_msg_id=msg.message_id
+    )
+    if not thread_ctx:
+        return space_ctx[-_EXTRACTOR_SPACE_FALLBACK:], space_ctx
+
+    return _merge_recent(thread_ctx, space_ctx), space_ctx
 
 
 async def _get_open_vacancies(query: str) -> list[dict]:
-    """Top-K открытых вакансий из БД по cosine с запросом.
+    """Кандидаты-вакансии для extractor'а: top-K по cosine + последняя созданная.
 
-    Даётся extractor'у как «вот что сейчас открыто в фирме». Закрывает кейс
-    длинных обсуждений, когда упоминание вакансии давно вышло из окна контекста.
+    Top-K по похожести закрывает длинные обсуждения, где упоминание давно вышло
+    из окна. Но безымянные follow-up'ы («зп от 2000») по эмбеддингу тянутся к
+    похожим зарплатам, а не к той вакансии, которую только что завели — поэтому
+    отдельно подкладываем последнюю созданную открытую вакансию и помечаем её
+    флагом `_latest` (extractor показывает её как [последняя созданная]).
     """
     resp = await _openai.embeddings.create(
         model=settings.openai_embedding_model, input=query
@@ -68,18 +105,37 @@ async def _get_open_vacancies(query: str) -> list[dict]:
     vec_str = "[" + ",".join(str(x) for x in resp.data[0].embedding) + "]"
     sql = text(
         """
-        SELECT title, status, team, salary_min, salary_max, currency
+        SELECT id::text, title, status, team, salary_min, salary_max, currency
         FROM vacancies
         WHERE status != 'closed' AND embedding IS NOT NULL AND is_deleted = false
         ORDER BY embedding <=> CAST(:vec AS vector(1536))
         LIMIT :k
         """
     )
+    latest_sql = text(
+        """
+        SELECT id::text, title, status, team, salary_min, salary_max, currency
+        FROM vacancies
+        WHERE status != 'closed' AND is_deleted = false
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
     async with AsyncSessionLocal() as session:
         rows = (
             await session.execute(sql, {"vec": vec_str, "k": _OPEN_VACANCIES_K})
         ).fetchall()
-    return [dict(r._mapping) for r in rows]
+        latest = (await session.execute(latest_sql)).fetchone()
+
+    vacancies = [dict(r._mapping) for r in rows]
+    if latest is not None:
+        latest_id = latest._mapping["id"]
+        existing = next((v for v in vacancies if v["id"] == latest_id), None)
+        if existing is not None:
+            existing["_latest"] = True
+        else:
+            vacancies.append({**dict(latest._mapping), "_latest": True})
+    return vacancies
 
 
 async def run_extraction(msg: IncomingMessage) -> None:

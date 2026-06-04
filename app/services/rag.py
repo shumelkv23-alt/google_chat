@@ -63,8 +63,10 @@ def _assemble_context(
 
     return (
         f"=== Память диалога ===\n{summary}\n\nПоследние реплики:\n{turns_str or '—'}\n\n"
-        f"=== Актуальное состояние вакансий ===\n{_format_vacancies(vacancies) or 'Нет данных'}\n\n"
-        f"=== Релевантные сообщения из пространства ===\n{_format_messages(messages) or 'Нет данных'}"
+        f"=== Актуальное состояние вакансий (данные из БД — приоритетный источник истины) ===\n"
+        f"{_format_vacancies(vacancies) or 'Нет данных'}\n\n"
+        f"=== Релевантные сообщения из пространства (вспомогательно, могут быть устаревшими) ===\n"
+        f"{_format_messages(messages) or 'Нет данных'}"
     )
 
 
@@ -90,7 +92,8 @@ def _format_vacancies(vacancies: list[dict]) -> str:
         if v.get("updated_at"):
             dt: datetime = v["updated_at"]
             updated = f", обновлено: {dt.strftime('%Y-%m-%d')}"
-        lines.append(f"- {v['title']} [{v['status']}]{salary}{owner}{team}{updated}")
+        desc = f"\n  Описание: {v['description'].strip()}" if v.get("description") else ""
+        lines.append(f"- {v['title']} [{v['status']}]{salary}{owner}{team}{updated}{desc}")
     return "\n".join(lines)
 
 

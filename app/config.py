@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     chat_a_space_id: str = ""
     chat_app_audience: str = ""  # = gcp_project_number
 
+    # Email сервис-аккаунта, которым Pub/Sub подписывает push-OIDC токен.
+    # Если задан — проверяем, что токен пришёл именно от него (defense-in-depth).
+    pubsub_oidc_email: str = ""
+
     # FastAPI / ngrok
     app_base_url: str = ""
 

@@ -11,7 +11,7 @@ from app.logger import logger
 from app.schemas.incoming import parse_we_event
 from app.services.edits import handle_delete, handle_edit
 from app.services.extraction import run_extraction
-from app.services.ingest import ingest_message
+from app.services.ingest import embed_message, persist_message
 
 router = APIRouter()
 
@@ -22,8 +22,12 @@ def _verify_pubsub_jwt(authorization: str) -> None:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     token = authorization[len("Bearer "):]
-    audience = f"{settings.app_base_url}/chat/pubsub-push"
-    id_token.verify_oauth2_token(token, _google_request, audience=audience)
+    audience = f"{settings.app_base_url.rstrip('/')}/chat/pubsub-push"
+    claims = id_token.verify_oauth2_token(token, _google_request, audience=audience)
+    # Если настроен ожидаемый отправитель — токен должен быть подписан именно им.
+    expected_email = settings.pubsub_oidc_email
+    if expected_email and claims.get("email") != expected_email:
+        raise HTTPException(status_code=401, detail="Untrusted token issuer")
 
 
 @router.post("/chat/pubsub-push")
@@ -46,6 +50,7 @@ async def pubsub_push(request: Request, background_tasks: BackgroundTasks) -> Re
     msg = envelope.get("message", {})
     data_b64 = msg.get("data", "")
     message_id = msg.get("messageId", "")
+    attributes = msg.get("attributes", {})
 
     if not data_b64:
         return Response(status_code=204)
@@ -56,9 +61,28 @@ async def pubsub_push(request: Request, background_tasks: BackgroundTasks) -> Re
         logger.error("pubsub_decode_error", message_id=message_id, error=str(e))
         return Response(status_code=204)
 
-    incoming = parse_we_event(data)
+    # Тип события WE API приходит в атрибуте CloudEvents `ce-type`
+    # (Pub/Sub message.attributes), а не в теле data.
+    event_type_raw = attributes.get("ce-type", "")
+    try:
+        incoming = parse_we_event({**data, "type": event_type_raw})
+    except Exception as e:
+        # Кривой payload не должен ронять хендлер в 500 — иначе Pub/Sub зациклит
+        # редоставку (poison pill). Логируем и подтверждаем (ack) приёмом.
+        logger.error(
+            "pubsub_parse_error",
+            message_id=message_id,
+            type=event_type_raw,
+            error=str(e),
+        )
+        return Response(status_code=204)
     if incoming is None:
-        logger.info("pubsub_event_skipped", message_id=message_id, type=data.get("type"))
+        logger.info(
+            "pubsub_event_skipped",
+            message_id=message_id,
+            type=event_type_raw,
+            attribute_keys=list(attributes.keys()),
+        )
         return Response(status_code=204)
 
     logger.info(
@@ -66,11 +90,18 @@ async def pubsub_push(request: Request, background_tasks: BackgroundTasks) -> Re
         message_id=message_id,
         type=incoming.event_type,
         text_chars=len(incoming.text),
+        quoted=incoming.quoted_message_id,
     )
 
     if incoming.event_type == "created":
-        background_tasks.add_task(ingest_message, incoming)
-        background_tasks.add_task(run_extraction, incoming)
+        # Запись в БД — синхронно, ДО ack: at-least-once гарантирует, что при
+        # падении воркера Pub/Sub переотправит. Тяжёлое (embedding, extraction)
+        # уходит в фон. embedding идемпотентен и идёт даже на дубликатах —
+        # чтобы догнать вектор, если он не успел создаться ранее.
+        is_new = await persist_message(incoming)
+        background_tasks.add_task(embed_message, incoming)
+        if is_new:
+            background_tasks.add_task(run_extraction, incoming)
     elif incoming.event_type == "updated":
         background_tasks.add_task(handle_edit, incoming)
     elif incoming.event_type == "deleted":

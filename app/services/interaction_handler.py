@@ -34,7 +34,6 @@ _CHART_DEFAULT_TYPE = "bar"
 async def handle_query(
     query: str, conversation: Conversation | None
 ) -> tuple[dict, str]:
-    """Главный диспетчер: классифицирует intent и вызывает нужный handler."""
     intent = await classify_intent(query)
     logger.info(
         "interaction_intent",
@@ -96,7 +95,6 @@ async def _handle_count(intent: Intent) -> tuple[dict, str]:
 
 
 async def _handle_list_recent(intent: Intent) -> tuple[dict, str]:
-    # Если ничего не задано — дефолт 7 дней.
     if intent.days is None and intent.hours is None:
         days, hours = _LIST_RECENT_DEFAULT_DAYS, None
     else:

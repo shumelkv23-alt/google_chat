@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select, text
@@ -55,22 +55,42 @@ async def _add_message(session, message_id: str, text_val: str = "txt", is_delet
     return m.id
 
 
-async def _add_vacancy(session, title: str, team: str | None = None, is_deleted: bool = False):
-    v = Vacancy(title=title, status="open", team=team, is_deleted=is_deleted)
+async def _add_vacancy(
+    session,
+    title: str,
+    team: str | None = None,
+    is_deleted: bool = False,
+    salary_min: int | None = None,
+):
+    v = Vacancy(
+        title=title, status="open", team=team, is_deleted=is_deleted, salary_min=salary_min
+    )
     session.add(v)
     await session.flush()
     return v.id
 
 
-async def _add_revision(session, vacancy_id, action: str, source_message_id) -> None:
-    session.add(
-        VacancyRevision(
-            vacancy_id=vacancy_id,
-            action=action,
-            source_message_id=source_message_id,
-            confidence=0.9,
-        )
+async def _add_revision(
+    session,
+    vacancy_id,
+    action: str,
+    source_message_id,
+    *,
+    old_value: str | None = None,
+    new_value: str | None = None,
+    created_at: datetime | None = None,
+) -> None:
+    rev = VacancyRevision(
+        vacancy_id=vacancy_id,
+        action=action,
+        source_message_id=source_message_id,
+        confidence=0.9,
+        old_value=old_value,
+        new_value=new_value,
     )
+    if created_at is not None:
+        rev.created_at = created_at
+    session.add(rev)
 
 
 async def _cleanup() -> None:
@@ -192,6 +212,7 @@ def test_handle_delete_soft_deletes_single_source_vacancy() -> None:
 
 
 def test_handle_delete_keeps_multi_source_vacancy() -> None:
+    """Удаляем update-источник при живом create → вакансия остаётся жива."""
     async def _run() -> None:
         await _cleanup()
         mid_a, mid_b = "edel-del-a", "edel-del-b"
@@ -203,19 +224,132 @@ def test_handle_delete_keeps_multi_source_vacancy() -> None:
             await _add_revision(session, vid, "update", ub)
             await session.commit()
 
-        await handle_delete(_incoming(mid_a, "deleted"))
+        await handle_delete(_incoming(mid_b, "deleted"))  # удаляем update-источник
 
         async with AsyncSessionLocal() as session:
             cm = (
                 await session.execute(
-                    select(ChatMessage).where(ChatMessage.message_id == mid_a)
+                    select(ChatMessage).where(ChatMessage.message_id == mid_b)
                 )
             ).scalar_one()
             assert cm.is_deleted is True
             vac = (
                 await session.execute(select(Vacancy).where(Vacancy.id == vid))
             ).scalar_one()
-            assert vac.is_deleted is False  # есть живой источник (B) → вакансия жива
+            assert vac.is_deleted is False  # create-источник (A) жив → вакансия жива
+
+        await _cleanup()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_handle_delete_create_source_deletes_vacancy() -> None:
+    """Удаляем create-источник при живом update → вакансия удаляется целиком."""
+    async def _run() -> None:
+        await _cleanup()
+        mid_a, mid_b = "edel-cre-a", "edel-cre-b"
+        async with AsyncSessionLocal() as session:
+            ua = await _add_message(session, mid_a)
+            ub = await _add_message(session, mid_b)
+            vid = await _add_vacancy(session, "EDELTEST-createdel")
+            await _add_revision(session, vid, "create", ua)
+            await _add_revision(session, vid, "update", ub)
+            await session.commit()
+
+        await handle_delete(_incoming(mid_a, "deleted"))  # удаляем create-источник
+
+        async with AsyncSessionLocal() as session:
+            vac = (
+                await session.execute(select(Vacancy).where(Vacancy.id == vid))
+            ).scalar_one()
+            assert vac.is_deleted is True  # «родитель» удалён → вакансия тоже
+
+        await _cleanup()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_handle_delete_reverts_update_field() -> None:
+    """Удаляем сообщение, поднявшее зарплату → поле откатывается к old_value."""
+    async def _run() -> None:
+        await _cleanup()
+        mid_a, mid_b = "edel-rev-a", "edel-rev-b"
+        async with AsyncSessionLocal() as session:
+            ua = await _add_message(session, mid_a)
+            ub = await _add_message(session, mid_b)
+            vid = await _add_vacancy(session, "EDELTEST-revert", salary_min=5000)
+            await _add_revision(
+                session, vid, "create", ua, new_value='{"salary_min": 3000}'
+            )
+            await _add_revision(
+                session,
+                vid,
+                "update",
+                ub,
+                old_value='{"salary_min": 3000}',
+                new_value='{"salary_min": 5000}',
+            )
+            await session.commit()
+
+        await handle_delete(_incoming(mid_b, "deleted"))
+
+        async with AsyncSessionLocal() as session:
+            vac = (
+                await session.execute(select(Vacancy).where(Vacancy.id == vid))
+            ).scalar_one()
+            assert vac.is_deleted is False  # живой источник A → вакансия жива
+            assert vac.salary_min == 3000  # правка B откатилась к old_value
+
+        await _cleanup()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_handle_delete_keeps_superseded_field() -> None:
+    """Удаляем среднее сообщение; более позднее живое уже перезаписало поле →
+    откатывать НЕ нужно, побеждает свежее значение."""
+    async def _run() -> None:
+        await _cleanup()
+        mid_a, mid_b, mid_c = "edel-sup-a", "edel-sup-b", "edel-sup-c"
+        t0 = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        async with AsyncSessionLocal() as session:
+            ua = await _add_message(session, mid_a)
+            ub = await _add_message(session, mid_b)
+            uc = await _add_message(session, mid_c)
+            vid = await _add_vacancy(session, "EDELTEST-superseded", salary_min=7000)
+            await _add_revision(
+                session, vid, "create", ua, new_value='{"salary_min": 3000}', created_at=t0
+            )
+            await _add_revision(
+                session,
+                vid,
+                "update",
+                ub,
+                old_value='{"salary_min": 3000}',
+                new_value='{"salary_min": 5000}',
+                created_at=t0 + timedelta(minutes=1),
+            )
+            await _add_revision(
+                session,
+                vid,
+                "update",
+                uc,
+                old_value='{"salary_min": 5000}',
+                new_value='{"salary_min": 7000}',
+                created_at=t0 + timedelta(minutes=2),
+            )
+            await session.commit()
+
+        await handle_delete(_incoming(mid_b, "deleted"))  # удаляем среднее (B)
+
+        async with AsyncSessionLocal() as session:
+            vac = (
+                await session.execute(select(Vacancy).where(Vacancy.id == vid))
+            ).scalar_one()
+            assert vac.salary_min == 7000  # C новее B → значение C сохраняется
 
         await _cleanup()
         await engine.dispose()

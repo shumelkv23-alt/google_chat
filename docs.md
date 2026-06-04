@@ -56,7 +56,7 @@
 
 Два независимых пути данных:
 
-- **Путь записи (Ingest):** ЧАТ А → WE API → Pub/Sub → `/pub-sub-push` → `chat_messages` → фоновые задачи (embeddings + state extraction).
+- **Путь записи (Ingest):** ЧАТ А → WE API → Pub/Sub → `/chat/pubsub-push` → `chat_messages` → фоновые задачи (embeddings + state extraction).
 - **Путь чтения (Interaction):** ЧАТ Б → Chat API → `/interactions` → RAG → ответ в ЧАТ Б.
 
 ---
@@ -86,7 +86,7 @@ Google Chat / Workspace-пространство. Мониторим как вн
 ```
 ЧАТ А — новое сообщение
   → WE API публикует событие в Cloud Pub/Sub топик
-  → push-подписка отправляет POST на /chat/pub-sub-push
+  → push-подписка отправляет POST на /chat/pubsub-push
 ```
 
 **Преимущества Pub/Sub:** буферизация, retry из коробки, защита от пиков нагрузки.
@@ -106,7 +106,7 @@ Google Chat / Workspace-пространство. Мониторим как вн
 
 Два эндпоинта с разной логикой обработки.
 
-### POST `/chat/pub-sub-push`
+### POST `/chat/pubsub-push`
 
 Принимает push-сообщения от Pub/Sub (путь записи).
 
@@ -514,7 +514,7 @@ WHERE id = ...
 ```
 1. Пользователь пишет в ЧАТ А
 2. WE API → Pub/Sub топик (новое событие)
-3. Push-подписка → POST /chat/pub-sub-push
+3. Push-подписка → POST /chat/pubsub-push
 4. Валидация JWT, распаковка события
 5. INSERT INTO chat_messages
 6. Ответ 200 OK (немедленно)

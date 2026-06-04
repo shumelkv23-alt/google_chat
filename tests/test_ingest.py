@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from app.db.models import ChatMessage, ChatMessageEmbedding
 from app.db.session import AsyncSessionLocal, engine
 from app.schemas.incoming import IncomingMessage, parse_we_event
-from app.services.ingest import ingest_message
+from app.services.ingest import embed_message, persist_message
 
 _FAKE_MSG_ID = "spaces/TEST/messages/ingest-test-1"
 
@@ -68,6 +68,26 @@ def test_parse_we_event_skips_empty_text() -> None:
     assert parse_we_event(event) is None
 
 
+def test_parse_we_event_extracts_quoted_message() -> None:
+    quoted_name = "spaces/TEST/messages/quoted-1"
+    event = {
+        **_WE_EVENT,
+        "message": {
+            **_WE_EVENT["message"],
+            "quotedMessageMetadata": {"name": quoted_name},
+        },
+    }
+    msg = parse_we_event(event)
+    assert msg is not None
+    assert msg.quoted_message_id == quoted_name
+
+
+def test_parse_we_event_no_quote_is_none() -> None:
+    msg = parse_we_event(_WE_EVENT)
+    assert msg is not None
+    assert msg.quoted_message_id is None
+
+
 async def _run_ingest() -> None:
     # cleanup
     async with AsyncSessionLocal() as session:
@@ -85,10 +105,19 @@ async def _run_ingest() -> None:
     mock_resp.data = [AsyncMock(embedding=fake_vector)]
 
     with patch("app.services.ingest._openai") as mock_openai:
-        mock_openai.embeddings.create = AsyncMock(return_value=mock_resp)
-        await ingest_message(msg)
+        mock_create = AsyncMock(return_value=mock_resp)
+        mock_openai.embeddings.create = mock_create
 
-        await ingest_message(msg)
+        # Первая доставка: новое сообщение + вектор.
+        assert await persist_message(msg) is True
+        await embed_message(msg)
+
+        # Повторная доставка (at-least-once): persist видит дубль, embed
+        # идемпотентен — второй вектор не создаётся, OpenAI не дёргается снова.
+        assert await persist_message(msg) is False
+        await embed_message(msg)
+
+        assert mock_create.await_count == 1
 
     async with AsyncSessionLocal() as session:
         row = (
@@ -99,14 +128,15 @@ async def _run_ingest() -> None:
         assert row.text == "Ищем Python разработчика, до 300к"
         assert row.source == "chat_a"
 
-        emb = (
+        embeddings = (
             await session.execute(
                 select(ChatMessageEmbedding).where(
                     ChatMessageEmbedding.message_id == row.id
                 )
             )
-        ).scalar_one()
-        assert len(emb.embedding) == 1536
+        ).scalars().all()
+        assert len(embeddings) == 1  # ровно один вектор, без дублей
+        assert len(embeddings[0].embedding) == 1536
 
     async with AsyncSessionLocal() as session:
         await session.execute(

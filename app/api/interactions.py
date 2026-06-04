@@ -10,8 +10,10 @@ from app.config import settings
 from app.db.models import Conversation
 from app.db.session import AsyncSessionLocal
 from app.logger import logger
+from app.services.attachments import extract_text_from_attachments
 from app.services.interaction_handler import handle_query
 from app.services.memory import MAX_TURNS, compact_conversation
+from app.services.resume_match import detect_resume_text, match_resume
 
 router = APIRouter()
 
@@ -50,7 +52,13 @@ async def chat_interaction(request: Request, background_tasks: BackgroundTasks) 
     if event_type == "ADDED_TO_SPACE":
         user_name = event.get("user", {}).get("displayName", "")
         return JSONResponse(
-            content={"text": f"Привет, {user_name}! Я бот-ассистент по вакансиям. Спрашивай про открытые позиции."}
+            content={
+                "text": (
+                    f"Привет, {user_name}! Я бот-ассистент по вакансиям. "
+                    "Спрашивай про открытые позиции, а ещё можешь прислать резюме "
+                    "(текстом с префиксом «резюме:» или файлом PDF/DOCX) — подберу подходящие вакансии."
+                )
+            }
         )
 
     if event_type != "MESSAGE":
@@ -58,9 +66,11 @@ async def chat_interaction(request: Request, background_tasks: BackgroundTasks) 
 
     user_id = event.get("user", {}).get("name", "")
     space_id = event.get("space", {}).get("name", "")
-    user_query = event.get("message", {}).get("text", "").strip()
+    message = event.get("message", {})
+    user_query = (message.get("text") or "").strip()
+    attachments = message.get("attachment") or []
 
-    if not user_query:
+    if not user_query and not attachments:
         return JSONResponse(content={})
 
     logger.info(
@@ -68,11 +78,34 @@ async def chat_interaction(request: Request, background_tasks: BackgroundTasks) 
         user_id=user_id,
         space_id=space_id,
         query_len=len(user_query),
+        attachments=len(attachments),
     )
 
     conversation = await _get_or_create_conversation(user_id, space_id)
-    payload, turn_text = await handle_query(user_query, conversation)
-    await _append_turns(background_tasks, user_id, space_id, user_query, turn_text)
+
+    # Резюме: либо файлом (PDF/DOCX), либо текстом с префиксом «резюме».
+    resume_text = None
+    attach_hint = None
+    if attachments:
+        resume_text, attach_hint = await extract_text_from_attachments(attachments)
+    if resume_text is None:
+        resume_text = detect_resume_text(user_query)
+
+    if resume_text:
+        payload, turn_text = await match_resume(resume_text)
+        user_turn = user_query or "[загрузил резюме файлом]"
+    elif attach_hint:
+        # Поддерживаемый файл был, но текст не достали — отдаём конкретную подсказку.
+        payload, turn_text, user_turn = {"text": attach_hint}, attach_hint, "[вложение не обработано]"
+    elif attachments and not user_query:
+        # Вложение есть, но это не PDF/DOCX (и текста нет).
+        msg = "Не смог прочитать вложение. Пришли резюме текстом или файлом PDF/DOCX."
+        payload, turn_text, user_turn = {"text": msg}, msg, "[вложение не распознано]"
+    else:
+        payload, turn_text = await handle_query(user_query, conversation)
+        user_turn = user_query
+
+    await _append_turns(background_tasks, user_id, space_id, user_turn, turn_text)
 
     return JSONResponse(content=payload)
 

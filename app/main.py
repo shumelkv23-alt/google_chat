@@ -9,6 +9,7 @@ from app.api.interactions import router as interactions_router
 from app.api.pubsub import router as pubsub_router
 from app.config import settings
 from app.logger import logger, setup_logging
+from app.services.batch_processor import batch_ticker
 from app.services.subscription import is_subscription_configured, renewal_loop
 
 engine = create_async_engine(settings.database_url)
@@ -26,14 +27,24 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("subscription_renewal_disabled")
 
+    batch_task: asyncio.Task | None = None
+    if settings.processing_mode == "batch":
+        batch_task = asyncio.create_task(batch_ticker())
+        logger.info(
+            "batch_mode_enabled",
+            size=settings.batch_size,
+            timeout_s=settings.batch_timeout_seconds,
+        )
+
     yield
 
-    if renewal_task is not None:
-        renewal_task.cancel()
-        try:
-            await renewal_task
-        except asyncio.CancelledError:
-            pass
+    for task in (renewal_task, batch_task):
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     await engine.dispose()
     logger.info("app_stopped")

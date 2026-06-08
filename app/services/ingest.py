@@ -40,6 +40,7 @@ async def persist_message(msg: IncomingMessage) -> bool:
                 text=msg.text,
                 created_at=msg.created_at,
                 source=msg.source,
+                quoted_message_id=msg.quoted_message_id,
             )
             .on_conflict_do_nothing(index_elements=["message_id"])
             .returning(ChatMessage.id)

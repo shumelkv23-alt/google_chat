@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +47,14 @@ class Settings(BaseSettings):
 
     # Отключить JWT-валидацию в локальной разработке
     skip_jwt_validation: bool = False
+
+    # Обработка сообщений: режим пайплайна и параметры батча.
+    # per_message — текущий путь (одно сообщение за раз).
+    # batch — копим сообщения и разбираем пачкой одним большим LLM-контекстом.
+    processing_mode: Literal["per_message", "batch"] = "per_message"
+    batch_size: int = 100  # порог пачки: столько накопленных → флаш
+    batch_timeout_seconds: int = 300  # макс. возраст необработанного → флаш (хвост)
+    batch_poll_seconds: int = 30  # как часто тикер проверяет условия флаша
 
 
 settings = Settings()

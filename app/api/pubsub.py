@@ -9,7 +9,8 @@ from google.oauth2 import id_token
 from app.config import settings
 from app.logger import logger
 from app.schemas.incoming import parse_we_event
-from app.services.edits import handle_delete, handle_edit
+from app.services.batch_processor import route_created_batch
+from app.services.edits import handle_delete, handle_edit, handle_edit_batch
 from app.services.extraction import run_extraction
 from app.services.ingest import embed_message, persist_message
 
@@ -95,15 +96,27 @@ async def pubsub_push(request: Request, background_tasks: BackgroundTasks) -> Re
 
     if incoming.event_type == "created":
         # Запись в БД — синхронно, ДО ack: at-least-once гарантирует, что при
-        # падении воркера Pub/Sub переотправит. Тяжёлое (embedding, extraction)
-        # уходит в фон. embedding идемпотентен и идёт даже на дубликатах —
-        # чтобы догнать вектор, если он не успел создаться ранее.
+        # падении воркера Pub/Sub переотправит. Тяжёлое уходит в фон.
         is_new = await persist_message(incoming)
-        background_tasks.add_task(embed_message, incoming)
-        if is_new:
-            background_tasks.add_task(run_extraction, incoming)
+        if settings.processing_mode == "batch":
+            # Batch: сообщение копится и ждёт пачку. Онлайн обрабатываем только
+            # при структурной привязке к существующей вакансии — это решает
+            # route_created_batch (см. fork.md).
+            if is_new:
+                background_tasks.add_task(route_created_batch, incoming)
+        else:
+            # Per-message: embedding идемпотентен и идёт даже на дубликатах —
+            # чтобы догнать вектор, если он не успел создаться ранее.
+            background_tasks.add_task(embed_message, incoming)
+            if is_new:
+                background_tasks.add_task(run_extraction, incoming)
     elif incoming.event_type == "updated":
-        background_tasks.add_task(handle_edit, incoming)
+        handler = (
+            handle_edit_batch
+            if settings.processing_mode == "batch"
+            else handle_edit
+        )
+        background_tasks.add_task(handler, incoming)
     elif incoming.event_type == "deleted":
         background_tasks.add_task(handle_delete, incoming)
 

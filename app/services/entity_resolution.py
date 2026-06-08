@@ -107,6 +107,31 @@ def _inherit_identity(result: ExtractionResult, matched: dict | None) -> Extract
     return result.model_copy(update={"fields": {**inherited, **result.fields}})
 
 
+async def find_anchor_vacancy(
+    msg: IncomingMessage,
+) -> tuple[uuid.UUID | None, str | None]:
+    """Вакансия, к которой сообщение привязано структурно (сильнее эмбеддинга).
+
+    Пользователь сам указал, к чему относится follow-up:
+      1) quoted reply (цитата) → вакансия процитированного сообщения;
+      2) reply в тред, уже принадлежащий вакансии.
+    Цитата приоритетнее треда — явное указание на конкретное сообщение.
+
+    Возвращает (vacancy_id, via): via ∈ {"quoted","thread"} для логов; (None, None)
+    если структурной привязки к существующей вакансии нет. Этим же helper'ом
+    batch-маршрутизатор решает «обработать сразу или отложить в пачку».
+    """
+    if msg.quoted_message_id:
+        anchor_id = await _find_quoted_vacancy(msg.quoted_message_id)
+        if anchor_id is not None:
+            return anchor_id, "quoted"
+    if msg.thread_id:
+        anchor_id = await _find_thread_vacancy(msg.thread_id)
+        if anchor_id is not None:
+            return anchor_id, "thread"
+    return None, None
+
+
 async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> None:
     """Главный вход: reply в тред вакансии → прямая привязка; иначе embed + резолвер."""
     if result.action == "none":
@@ -115,19 +140,11 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
 
     msg_uuid = await _get_message_uuid(msg.message_id)
 
-    # Прямая привязка по структурному сигналу — сильнее эмбеддинга/резолвера, т.к.
-    # пользователь сам указал, к чему относится follow-up («поднимаем до 2000»):
-    #   1) quoted reply (цитата) → вакансия процитированного сообщения;
-    #   2) reply в тред, уже принадлежащий вакансии.
-    # Цитата приоритетнее треда: это явное указание на конкретное сообщение.
-    anchor_id: uuid.UUID | None = None
-    via: str | None = None
-    if msg.quoted_message_id:
-        anchor_id = await _find_quoted_vacancy(msg.quoted_message_id)
-        via = "quoted"
-    if anchor_id is None and msg.thread_id:
-        anchor_id = await _find_thread_vacancy(msg.thread_id)
-        via = "thread"
+    # Прямая привязка по структурному сигналу (цитата/тред) — сильнее
+    # эмбеддинга/резолвера, т.к. пользователь сам указал, к чему относится
+    # follow-up. Логика вынесена в find_anchor_vacancy (ею же пользуется
+    # batch-маршрутизатор).
+    anchor_id, via = await find_anchor_vacancy(msg)
 
     if anchor_id is not None:
         # create поверх существующей вакансии — это дополнение, а не дубль.

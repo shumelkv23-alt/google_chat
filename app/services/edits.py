@@ -78,6 +78,33 @@ async def handle_edit(msg: IncomingMessage) -> None:
     logger.info("edit_done", message_id=msg.message_id)
 
 
+async def handle_edit_batch(msg: IncomingMessage) -> None:
+    """MESSAGE_UPDATED в batch-режиме.
+
+    Если сообщение ещё не разобрано (ждёт пачку) — только обновляем текст и
+    is_edited: пачка возьмёт свежий вариант и сама посчитает embedding/extraction
+    (повторно гонять одиночный путь нельзя — будет дубль работы). Если уже
+    разобрано — полный handle_edit (пересчёт embedding + state).
+    """
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                select(ChatMessage).where(ChatMessage.message_id == msg.message_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            logger.info("edit_unknown_message", message_id=msg.message_id)
+            return
+        if not row.is_processed:
+            row.text = msg.text
+            row.is_edited = True
+            await session.commit()
+            logger.info("edit_queued_for_batch", message_id=msg.message_id)
+            return
+
+    await handle_edit(msg)
+
+
 async def handle_delete(msg: IncomingMessage) -> None:
     """MESSAGE_DELETED: soft-delete сообщения + soft-delete вакансии, если источник единственный."""
     async with AsyncSessionLocal() as session:

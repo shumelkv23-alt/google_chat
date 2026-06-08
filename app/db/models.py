@@ -49,12 +49,25 @@ class ChatMessage(Base):
     is_edited: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, server_default=sa.text("false")
     )
+    # batch-конвейер: false — ещё не разобрано пайплайном, ждёт пачку.
+    is_processed: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.text("false")
+    )
+    # message_id процитированного сообщения (quoted reply); нужен батчу, чтобы
+    # восстановить связь цитаты при разборе пачки.
+    quoted_message_id: Mapped[str | None] = mapped_column(sa.Text)
 
     __table_args__ = (
         sa.CheckConstraint("source IN ('chat_a', 'chat_b')", name="chat_messages_source_check"),
         sa.Index("ix_chat_messages_space_created", "space_id", sa.text("created_at DESC")),
         sa.Index("ix_chat_messages_thread", "thread_id"),
         sa.Index("ix_chat_messages_author", "author_id"),
+        sa.Index(
+            "ix_chat_messages_unprocessed",
+            "space_id",
+            "created_at",
+            postgresql_where=sa.text("is_processed = false"),
+        ),
     )
 
 

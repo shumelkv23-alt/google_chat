@@ -1,12 +1,5 @@
-"""Entity resolution: финальное решение create/update/close на основе LLM + БД.
-
-Контракт:
-- Extractor выдаёт action как hint (видит только тред).
-- Здесь решаем финально: совпадает ли entity_ref с существующей open-вакансией.
-- Решение основано на эмбеддинг-поиске + LLM-резолвере.
-"""
-
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -18,6 +11,7 @@ from app.config import settings
 from app.db.models import ChatMessage, Vacancy, VacancyRevision
 from app.db.session import AsyncSessionLocal
 from app.llm.extractor import ExtractionResult
+from app.llm.posting_classifier import classify_new_posting
 from app.llm.resolver import ResolutionResult, resolve_entity
 from app.logger import logger
 from app.schemas.incoming import IncomingMessage
@@ -40,6 +34,77 @@ _FIELD_MAP = {
     "team": "team",
     "description": "description",
 }
+
+
+
+# Явные маркеры самостоятельного объявления о найме. Цель — отличить «новый
+# найм» (create, пусть даже на уже открытую роль: это другой набор) от правки
+# условий идущей вакансии (update). Это быстрый детерминированный сигнал; точное
+# решение принимает связка с LLM в _decide_new_posting — поэтому набор можно
+# держать широким, не боясь редких ложных срабатываний.
+_NEW_POSTING_RE = re.compile(
+    r"\b(?:"
+    # — рус.: глаголы поиска / набора —
+    r"ищ(?:ем|у|ется|ете)"
+    r"|разыскива(?:ется|ем)"
+    r"|нужен|нужна|нужны"
+    r"|требу(?:ется|ются)"
+    r"|набира(?:ем|ю|ется)"
+    r"|приглаша(?:ем|ю)"
+    r"|зов[её]м"
+    r"|нанять|нанима(?:ем|ю|ть)"
+    r"|найм[её]м"
+    r"|рассматрива(?:ем|ю)\s+кандидат"
+    # — рус.: «(открыли|новая|есть) вакансия|позиция|роль|набор» —
+    r"|откры(?:л[аи]?|т[аы]?)\s+(?:ваканс|позици|рол|набор)"
+    r"|нов(?:ая|ую|ой)\s+(?:ваканс|позици|рол)"
+    r"|(?:есть|появил[аи]сь|свежая)\s+ваканс"
+    # — англ. —
+    r"|hiring"
+    r"|looking\s+for"
+    r"|open(?:ing)?\s+(?:position|role|vacancy)"
+    r"|join\s+(?:our|the)\s+team"
+    r"|we(?:'re| are)\s+(?:looking|hiring)"
+    r")",
+    re.IGNORECASE,
+)
+
+# LLM-вердикту ниже этого порога не доверяем — падаем на regex.
+_POSTING_CONFIDENCE_MIN = 0.6
+
+
+def _is_new_posting(text: str) -> bool:
+    """Быстрая regex-эвристика: похоже ли сообщение на объявление о найме."""
+    return bool(_NEW_POSTING_RE.search(text))
+
+
+async def _decide_new_posting(text: str, matched: dict | None) -> bool:
+
+    regex_hit = _is_new_posting(text)
+    verdict = await classify_new_posting(text, matched)
+    if verdict.confidence >= _POSTING_CONFIDENCE_MIN:
+        return verdict.new_posting
+    return regex_hit
+
+
+def _inherit_identity(result: ExtractionResult, matched: dict | None) -> ExtractionResult:
+    """Дополнить новый найм идентичностью найденного дубля (title/team).
+
+    new_posting — отдельный найм на ту же роль, но extractor в update-режиме
+    отдаёт лишь изменённые условия (зарплата, уровень) и роняет title/team —
+    без этого новая запись теряет роль и компанию. Берём их из матча. Поля,
+    заданные сообщением явно, не трогаем (result.fields в приоритете).
+    """
+    if not matched:
+        return result
+    inherited = {
+        key: matched[key]
+        for key in ("title", "team")
+        if key not in result.fields and matched.get(key) is not None
+    }
+    if not inherited:
+        return result
+    return result.model_copy(update={"fields": {**inherited, **result.fields}})
 
 
 async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> None:
@@ -104,8 +169,10 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
             )
 
     # 3) Нет кандидатов вообще → либо создаём новую, либо логируем промах.
+    #    Явное объявление о найме создаём, даже если extractor ошибочно дал
+    #    update (иначе сообщение молча терялось бы как no_candidates_for_update).
     if not candidates:
-        if result.action == "create":
+        if result.action == "create" or await _decide_new_posting(msg.text, None):
             async with AsyncSessionLocal() as session:
                 async with session.begin():
                     await _create_vacancy(session, result, ref_vector, msg_uuid, msg)
@@ -122,9 +189,28 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
     # 4) Есть кандидаты — спрашиваем LLM-резолвер.
     llm: ResolutionResult = await resolve_entity(entity_ref, candidates, msg.text)
 
+    confident = bool(llm.vacancy_id) and llm.confidence >= _CONFIDENCE_MIN
+    matched = next((c for c in candidates if c["id"] == llm.vacancy_id), None)
+    # Резолвер сказал «к какой записи относится», но не «новый это найм или правка».
+    # Похожая открытая роль матчится в обоих случаях — намерение решает связка
+    # regex + LLM, сверяясь с самой найденной вакансией.
+    new_posting = confident and await _decide_new_posting(msg.text, matched)
+
     async with AsyncSessionLocal() as session:
         async with session.begin():
-            if llm.vacancy_id and llm.confidence >= _CONFIDENCE_MIN:
+            if new_posting:
+                # Уверенный матч на похожую позицию, но это ОТДЕЛЬНЫЙ найм на ту же
+                # роль, а не правка. Создаём новую, найденную не трогаем. title/team
+                # наследуем из дубля — extractor в update-режиме их роняет.
+                await _create_vacancy(
+                    session, _inherit_identity(result, matched), ref_vector, msg_uuid, msg
+                )
+                logger.info(
+                    "resolution_new_posting_created",
+                    message_id=msg.message_id,
+                    near_duplicate_id=llm.vacancy_id,
+                )
+            elif confident:
                 # Резолвер уверенно матчит → апдейтим существующую.
                 # Если extractor сказал "create", переписываем на "update":
                 # это не дубль, а дополнение к уже существующей записи.

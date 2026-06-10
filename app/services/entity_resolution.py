@@ -1,5 +1,4 @@
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 
@@ -15,6 +14,7 @@ from app.llm.posting_classifier import classify_new_posting
 from app.llm.resolver import ResolutionResult, resolve_entity
 from app.logger import logger
 from app.schemas.incoming import IncomingMessage
+from app.services.posting_heuristic import is_new_posting
 
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 
@@ -37,50 +37,13 @@ _FIELD_MAP = {
 
 
 
-# Явные маркеры самостоятельного объявления о найме. Цель — отличить «новый
-# найм» (create, пусть даже на уже открытую роль: это другой набор) от правки
-# условий идущей вакансии (update). Это быстрый детерминированный сигнал; точное
-# решение принимает связка с LLM в _decide_new_posting — поэтому набор можно
-# держать широким, не боясь редких ложных срабатываний.
-_NEW_POSTING_RE = re.compile(
-    r"\b(?:"
-    # — рус.: глаголы поиска / набора —
-    r"ищ(?:ем|у|ется|ете)"
-    r"|разыскива(?:ется|ем)"
-    r"|нужен|нужна|нужны"
-    r"|требу(?:ется|ются)"
-    r"|набира(?:ем|ю|ется)"
-    r"|приглаша(?:ем|ю)"
-    r"|зов[её]м"
-    r"|нанять|нанима(?:ем|ю|ть)"
-    r"|найм[её]м"
-    r"|рассматрива(?:ем|ю)\s+кандидат"
-    # — рус.: «(открыли|новая|есть) вакансия|позиция|роль|набор» —
-    r"|откры(?:л[аи]?|т[аы]?)\s+(?:ваканс|позици|рол|набор)"
-    r"|нов(?:ая|ую|ой)\s+(?:ваканс|позици|рол)"
-    r"|(?:есть|появил[аи]сь|свежая)\s+ваканс"
-    # — англ. —
-    r"|hiring"
-    r"|looking\s+for"
-    r"|open(?:ing)?\s+(?:position|role|vacancy)"
-    r"|join\s+(?:our|the)\s+team"
-    r"|we(?:'re| are)\s+(?:looking|hiring)"
-    r")",
-    re.IGNORECASE,
-)
-
 # LLM-вердикту ниже этого порога не доверяем — падаем на regex.
 _POSTING_CONFIDENCE_MIN = 0.6
 
 
-def _is_new_posting(text: str) -> bool:
-    """Быстрая regex-эвристика: похоже ли сообщение на объявление о найме."""
-    return bool(_NEW_POSTING_RE.search(text))
-
-
 async def _decide_new_posting(text: str, matched: dict | None) -> bool:
 
-    regex_hit = _is_new_posting(text)
+    regex_hit = is_new_posting(text)
     verdict = await classify_new_posting(text, matched)
     if verdict.confidence >= _POSTING_CONFIDENCE_MIN:
         return verdict.new_posting

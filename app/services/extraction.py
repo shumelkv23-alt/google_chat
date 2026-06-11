@@ -105,7 +105,7 @@ async def _get_open_vacancies(query: str) -> list[dict]:
     vec_str = "[" + ",".join(str(x) for x in resp.data[0].embedding) + "]"
     sql = text(
         """
-        SELECT id::text, title, status, team, salary_min, salary_max, currency
+        SELECT id::text, title, status, team, salary_min, salary_max, currency, location
         FROM vacancies
         WHERE status != 'closed' AND embedding IS NOT NULL AND is_deleted = false
         ORDER BY embedding <=> CAST(:vec AS vector(1536))
@@ -114,7 +114,7 @@ async def _get_open_vacancies(query: str) -> list[dict]:
     )
     latest_sql = text(
         """
-        SELECT id::text, title, status, team, salary_min, salary_max, currency
+        SELECT id::text, title, status, team, salary_min, salary_max, currency, location
         FROM vacancies
         WHERE status != 'closed' AND is_deleted = false
         ORDER BY created_at DESC

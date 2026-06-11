@@ -13,7 +13,12 @@ _SYSTEM_BASE = """\
 Отвечай ТОЛЬКО валидным JSON без markdown-блоков.
 
 Поля action: create | update | close | none
-Поля fields: title, salary_min, salary_max, currency, status, owner, team, description.
+Поля fields: title, salary_min, salary_max, currency, status, owner, team,
+description, location, additional_info.
+- description — суть роли: что за позиция, чем заниматься.
+- location — где работать: "удалёнка", "Москва, офис", "гибрид, СПб".
+- additional_info — полезные детали, не вошедшие в отдельные поля (грейд,
+  уровень языка, формат работы, бенефиты). НЕ дублируй сюда description.
 Если поле не упомянуто — НЕ включай его в fields (не выдумывай).\
 """
 
@@ -58,7 +63,12 @@ _SYSTEM_FULL = """\
   follow-up — title позиции, обсуждаемой в Контексте; если её в Контексте нет —
   title вакансии [последняя созданная]. Предпочитай title из списка открытых.
 
-Поля fields: title, salary_min, salary_max, currency, status, owner, team, description.
+Поля fields: title, salary_min, salary_max, currency, status, owner, team,
+description, location, additional_info.
+- description — суть роли: что за позиция, чем заниматься.
+- location — где работать: "удалёнка", "Москва, офис", "гибрид, СПб".
+- additional_info — полезные детали, не вошедшие в отдельные поля (грейд,
+  уровень языка, формат работы, бенефиты). НЕ дублируй сюда description.
 Если поле не упомянуто — НЕ включай его в fields.
 confidence: 0.0–1.0 — насколько ты уверен в action и entity_ref.
 Если action != "none", confidence должен быть > 0.3.\
@@ -130,9 +140,10 @@ def _format_open_vacancies(vacancies: list[dict]) -> str:
             cur = v.get("currency") or "RUB"
             salary = f", {lo or '?'}–{hi or '?'} {cur}"
         team = f", команда: {v['team']}" if v.get("team") else ""
+        location = f", локация: {v['location']}" if v.get("location") else ""
         status = v.get("status") or "open"
         marker = " [последняя созданная]" if v.get("_latest") else ""
-        lines.append(f"- {v['title']} [{status}]{salary}{team}{marker}")
+        lines.append(f"- {v['title']} [{status}]{salary}{team}{location}{marker}")
     return "\n".join(lines)
 
 

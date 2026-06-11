@@ -17,6 +17,7 @@ from app.db.models import ChatMessage, ChatMessageEmbedding
 from app.db.session import AsyncSessionLocal
 from app.logger import logger
 from app.schemas.incoming import IncomingMessage
+from app.services.hashing import sha256_hex
 
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 
@@ -38,6 +39,7 @@ async def persist_message(msg: IncomingMessage) -> bool:
                 author_id=msg.author_id,
                 author_name=msg.author_name,
                 text=msg.text,
+                text_hash=sha256_hex(msg.text),
                 created_at=msg.created_at,
                 source=msg.source,
                 quoted_message_id=msg.quoted_message_id,

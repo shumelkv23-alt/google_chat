@@ -38,7 +38,7 @@ async def _search(vec_str: str) -> tuple[list[dict], list[dict]]:
     """)
     vac_sql = text(f"""
         SELECT title, status, salary_min, salary_max, currency,
-               owner_name, team, description, updated_at
+               owner_name, team, description, location, additional_info, updated_at
         FROM vacancies
         WHERE embedding IS NOT NULL AND is_deleted = false
         ORDER BY embedding <=> '{vec_str}'::vector(1536)
@@ -88,12 +88,20 @@ def _format_vacancies(vacancies: list[dict]) -> str:
             salary = f", зарплата {lo}–{hi} {v.get('currency', 'RUB')}"
         owner = f", овнер: {v['owner_name']}" if v.get("owner_name") else ""
         team = f", команда: {v['team']}" if v.get("team") else ""
+        location = f", локация: {v['location']}" if v.get("location") else ""
         updated = ""
         if v.get("updated_at"):
             dt: datetime = v["updated_at"]
             updated = f", обновлено: {dt.strftime('%Y-%m-%d')}"
         desc = f"\n  Описание: {v['description'].strip()}" if v.get("description") else ""
-        lines.append(f"- {v['title']} [{v['status']}]{salary}{owner}{team}{updated}{desc}")
+        extra = (
+            f"\n  Доп.: {v['additional_info'].strip()}"
+            if v.get("additional_info")
+            else ""
+        )
+        lines.append(
+            f"- {v['title']} [{v['status']}]{salary}{owner}{team}{location}{updated}{desc}{extra}"
+        )
     return "\n".join(lines)
 
 

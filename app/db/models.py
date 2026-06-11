@@ -50,23 +50,43 @@ class ChatMessage(Base):
         sa.Boolean, nullable=False, server_default=sa.text("false")
     )
     # batch-конвейер: false — ещё не разобрано пайплайном, ждёт пачку.
+    # Переходный дубль process_status, обновляется синхронно с ним.
     is_processed: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, server_default=sa.text("false")
     )
     # message_id процитированного сообщения (quoted reply); нужен батчу, чтобы
     # восстановить связь цитаты при разборе пачки.
     quoted_message_id: Mapped[str | None] = mapped_column(sa.Text)
+    # sha256 текста — версия содержимого; обновляется всегда вместе с text.
+    # Условный mark_processed сверяет его, чтобы не проглотить правку,
+    # пришедшую во время флаша (batch_mode_v2, B1).
+    text_hash: Mapped[str | None] = mapped_column(sa.Text)
+    # Счётчик неудачных флашей: драйвер бисекции пачки и dead-letter (B10).
+    flush_attempts: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, server_default=sa.text("0")
+    )
+    # Задел под мультиворкер (claim пачки на уровне БД); пока всегда NULL.
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    # 'pending' | 'processed' | 'failed' — замена голому is_processed с
+    # терминальным состоянием failed (ядовитое сообщение выведено из очереди).
+    process_status: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, server_default=sa.text("'pending'")
+    )
 
     __table_args__ = (
         sa.CheckConstraint("source IN ('chat_a', 'chat_b')", name="chat_messages_source_check"),
+        sa.CheckConstraint(
+            "process_status IN ('pending', 'processed', 'failed')",
+            name="chat_messages_process_status_check",
+        ),
         sa.Index("ix_chat_messages_space_created", "space_id", sa.text("created_at DESC")),
         sa.Index("ix_chat_messages_thread", "thread_id"),
         sa.Index("ix_chat_messages_author", "author_id"),
         sa.Index(
-            "ix_chat_messages_unprocessed",
+            "ix_chat_messages_pending",
             "space_id",
             "created_at",
-            postgresql_where=sa.text("is_processed = false"),
+            postgresql_where=sa.text("process_status = 'pending' AND is_deleted = false"),
         ),
     )
 
@@ -102,6 +122,11 @@ class Vacancy(Base):
     owner_name: Mapped[str | None] = mapped_column(sa.Text)
     team: Mapped[str | None] = mapped_column(sa.Text)
     description: Mapped[str | None] = mapped_column(sa.Text)
+    # Где предстоит работать: "удалёнка", "Москва, офис", "гибрид, СПб".
+    location: Mapped[str | None] = mapped_column(sa.Text)
+    # Полезные детали, не вошедшие в отдельные поля (грейд, уровень языка,
+    # формат, бенефиты). Семантика замены, как у остальных полей вакансии.
+    additional_info: Mapped[str | None] = mapped_column(sa.Text)
     last_message_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), sa.ForeignKey("chat_messages.id")
     )

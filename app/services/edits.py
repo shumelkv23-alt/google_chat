@@ -18,6 +18,7 @@ from app.db.session import AsyncSessionLocal
 from app.logger import logger
 from app.schemas.incoming import IncomingMessage
 from app.services.extraction import run_extraction
+from app.services.hashing import sha256_hex
 
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 
@@ -31,6 +32,8 @@ _REVERTABLE_FIELDS = {
     "owner_name",
     "team",
     "description",
+    "location",
+    "additional_info",
     "status",
 }
 
@@ -48,6 +51,7 @@ async def handle_edit(msg: IncomingMessage) -> None:
             logger.info("edit_unknown_message", message_id=msg.message_id)
             return
         row.text = msg.text
+        row.text_hash = sha256_hex(msg.text)
         row.is_edited = True
         msg_uuid = row.id
         await session.commit()
@@ -81,10 +85,13 @@ async def handle_edit(msg: IncomingMessage) -> None:
 async def handle_edit_batch(msg: IncomingMessage) -> None:
     """MESSAGE_UPDATED в batch-режиме.
 
-    Если сообщение ещё не разобрано (ждёт пачку) — только обновляем текст и
-    is_edited: пачка возьмёт свежий вариант и сама посчитает embedding/extraction
-    (повторно гонять одиночный путь нельзя — будет дубль работы). Если уже
-    разобрано — полный handle_edit (пересчёт embedding + state).
+    Если сообщение ещё не разобрано (ждёт пачку) — только обновляем текст,
+    text_hash и is_edited: пачка возьмёт свежий вариант и сама посчитает
+    embedding/extraction (повторно гонять одиночный путь нельзя — будет дубль
+    работы). Новый text_hash дополнительно ловит правку во время флаша (B1):
+    условный mark_processed увидит расхождение и оставит сообщение pending.
+    failed-сообщение (dead-letter) правка воскрешает: pending + attempts=0.
+    Если уже разобрано — полный handle_edit (пересчёт embedding + state).
     """
     async with AsyncSessionLocal() as session:
         row = (
@@ -95,9 +102,15 @@ async def handle_edit_batch(msg: IncomingMessage) -> None:
         if row is None:
             logger.info("edit_unknown_message", message_id=msg.message_id)
             return
-        if not row.is_processed:
+        if row.process_status != "processed":
             row.text = msg.text
+            row.text_hash = sha256_hex(msg.text)
             row.is_edited = True
+            if row.process_status == "failed":
+                # Возврат из dead-letter: человек поправил текст — пробуем заново.
+                row.process_status = "pending"
+                row.flush_attempts = 0
+                logger.info("edit_revived_failed", message_id=msg.message_id)
             await session.commit()
             logger.info("edit_queued_for_batch", message_id=msg.message_id)
             return

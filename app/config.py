@@ -53,8 +53,15 @@ class Settings(BaseSettings):
     # batch — копим сообщения и разбираем пачкой одним большим LLM-контекстом.
     processing_mode: Literal["per_message", "batch"] = "per_message"
     batch_size: int = 100  # порог пачки: столько накопленных → флаш
-    batch_timeout_seconds: int = 300  # макс. возраст необработанного → флаш (хвост)
-    batch_poll_seconds: int = 30  # как часто тикер проверяет условия флаша
+    batch_timeout_seconds: int = 300  # жёсткий потолок возраста pending → флаш
+    batch_poll_seconds: int = 15  # тикер чаще: quiet window требует разрешающей способности
+    # batch v2 (см. batch_mode_v2.md)
+    quiet_seconds: int = 75  # тишина в space → флаш (основной триггер)
+    batch_token_budget: int = 12_000  # потолок пачки по токенам (режет по границе треда)
+    history_tail: int = 25  # сообщений обработанной истории в контекст пачки
+    history_hours: int = 24  # глубина истории
+    bisect_threshold: int = 3  # flush_attempts → бисекция пачки
+    fail_threshold: int = 5  # flush_attempts одиночного → dead-letter (failed)
 
 
 settings = Settings()

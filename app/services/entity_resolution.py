@@ -33,6 +33,8 @@ _FIELD_MAP = {
     "owner": "owner_name",
     "team": "team",
     "description": "description",
+    "location": "location",
+    "additional_info": "additional_info",
 }
 
 
@@ -95,11 +97,59 @@ async def find_anchor_vacancy(
     return None, None
 
 
-async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> None:
-    """Главный вход: reply в тред вакансии → прямая привязка; иначе embed + резолвер."""
+async def verify_open_vacancy(vacancy_id: uuid.UUID) -> bool:
+    """id существует, не удалён и не закрыт. Защита от галлюцинаций LLM:
+    link_to_vacancy_ref из пачки применяем только после этой проверки."""
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                select(Vacancy.id).where(
+                    Vacancy.id == vacancy_id,
+                    Vacancy.is_deleted.is_(False),
+                    Vacancy.status != "closed",
+                )
+            )
+        ).first()
+    return row is not None
+
+
+async def apply_to_vacancy(
+    vacancy_id: uuid.UUID, msg: IncomingMessage, result: ExtractionResult
+) -> uuid.UUID | None:
+    """Применить экстракцию к ЗАРАНЕЕ ИЗВЕСТНОЙ вакансии (структурная связь из
+    пачки: link_to_index / link_to_vacancy_ref). Эмбеддинг-резолв не вызывается —
+    связь, которую LLM нашла в пачке, доходит до БД напрямую (B8)."""
+    if result.action == "none":
+        return None
+    msg_uuid = await _get_message_uuid(msg.message_id)
+    # create поверх известной вакансии — это дополнение, а не дубль.
+    effective_action = "update" if result.action == "create" else result.action
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            title = await _update_vacancy(
+                session, vacancy_id, result, effective_action, None, msg_uuid
+            )
+    logger.info(
+        "resolution_batch_link",
+        message_id=msg.message_id,
+        vacancy=title,
+        action=effective_action,
+    )
+    return vacancy_id
+
+
+async def resolve_and_save(
+    msg: IncomingMessage, result: ExtractionResult
+) -> uuid.UUID | None:
+    """Главный вход: reply в тред вакансии → прямая привязка; иначе embed + резолвер.
+
+    Возвращает id затронутой (созданной/обновлённой) вакансии или None, если
+    действие ушло в pending/промах. Батчу id нужен для карты index→vacancy
+    (цепочки link_to_index внутри пачки).
+    """
     if result.action == "none":
         logger.info("resolution_skipped_none", message_id=msg.message_id)
-        return
+        return None
 
     msg_uuid = await _get_message_uuid(msg.message_id)
 
@@ -125,14 +175,14 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
             action=effective_action,
             via=via,
         )
-        return
+        return anchor_id
 
     entity_ref = result.entity_ref or result.fields.get("title", "")
     if not entity_ref:
         logger.info(
             "resolution_skipped_no_ref", message_id=msg.message_id, action=result.action
         )
-        return
+        return None
 
     ref_vector = await _embed(entity_ref)
 
@@ -155,16 +205,18 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
         if result.action == "create" or await _decide_new_posting(msg.text, None):
             async with AsyncSessionLocal() as session:
                 async with session.begin():
-                    await _create_vacancy(session, result, ref_vector, msg_uuid, msg)
+                    created_id = await _create_vacancy(
+                        session, result, ref_vector, msg_uuid, msg
+                    )
             logger.info("resolution_created_new", message_id=msg.message_id)
-        else:
-            logger.warning(
-                "resolution_no_candidates_for_update",
-                message_id=msg.message_id,
-                action=result.action,
-                entity_ref=entity_ref,
-            )
-        return
+            return created_id
+        logger.warning(
+            "resolution_no_candidates_for_update",
+            message_id=msg.message_id,
+            action=result.action,
+            entity_ref=entity_ref,
+        )
+        return None
 
     # 4) Есть кандидаты — спрашиваем LLM-резолвер.
     llm: ResolutionResult = await resolve_entity(entity_ref, candidates, msg.text)
@@ -176,13 +228,14 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
     # regex + LLM, сверяясь с самой найденной вакансией.
     new_posting = confident and await _decide_new_posting(msg.text, matched)
 
+    affected_id: uuid.UUID | None = None
     async with AsyncSessionLocal() as session:
         async with session.begin():
             if new_posting:
                 # Уверенный матч на похожую позицию, но это ОТДЕЛЬНЫЙ найм на ту же
                 # роль, а не правка. Создаём новую, найденную не трогаем. title/team
                 # наследуем из дубля — extractor в update-режиме их роняет.
-                await _create_vacancy(
+                affected_id = await _create_vacancy(
                     session, _inherit_identity(result, matched), ref_vector, msg_uuid, msg
                 )
                 logger.info(
@@ -201,9 +254,10 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
                         message_id=msg.message_id,
                         matched_vacancy_id=llm.vacancy_id,
                     )
+                affected_id = uuid.UUID(llm.vacancy_id)
                 await _update_vacancy(
                     session,
-                    uuid.UUID(llm.vacancy_id),
+                    affected_id,
                     result,
                     effective_action,
                     ref_vector,
@@ -211,7 +265,9 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
                 )
             elif not llm.vacancy_id and result.action == "create":
                 # Резолвер уверенно сказал "это новая позиция" → создаём.
-                await _create_vacancy(session, result, ref_vector, msg_uuid, msg)
+                affected_id = await _create_vacancy(
+                    session, result, ref_vector, msg_uuid, msg
+                )
             elif llm.vacancy_id:
                 # Матч есть, но уверенности мало → пишем pending для разбора.
                 await _add_revision(
@@ -244,6 +300,7 @@ async def resolve_and_save(msg: IncomingMessage, result: ExtractionResult) -> No
         action=result.action,
         entity_ref=entity_ref,
     )
+    return affected_id
 
 
 async def _add_revision(session, **values) -> None:
@@ -368,7 +425,7 @@ async def _create_vacancy(
     embedding: list[float],
     msg_uuid: uuid.UUID | None,
     msg: IncomingMessage,
-) -> None:
+) -> uuid.UUID:
     fields = result.fields
     vac = Vacancy(
         title=fields.get("title") or result.entity_ref,
@@ -380,6 +437,8 @@ async def _create_vacancy(
         owner_name=fields.get("owner") or msg.author_name,
         team=fields.get("team"),
         description=fields.get("description"),
+        location=fields.get("location"),
+        additional_info=fields.get("additional_info"),
         last_message_id=msg_uuid,
         embedding=embedding,
         confidence=result.confidence,
@@ -397,7 +456,7 @@ async def _create_vacancy(
         source_message_id=msg_uuid,
         confidence=result.confidence,
     )
-    return vac.title
+    return vac.id
 
 
 async def _update_vacancy(

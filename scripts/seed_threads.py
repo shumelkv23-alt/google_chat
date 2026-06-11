@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from app.db.models import ChatMessage
 from app.db.session import AsyncSessionLocal, engine
+from app.services.hashing import sha256_hex
 
 SPACE = "spaces/AAQAmmGOtCo"
 THREAD = "spaces/AAQAmmGOtCo/threads/scala-T1"
@@ -42,6 +43,7 @@ async def _run() -> None:
                     author_id="users/seed-author",
                     author_name="Seed Author",
                     text=txt,
+                    text_hash=sha256_hex(txt),
                     created_at=base + timedelta(minutes=i),
                     source="chat_a",
                     quoted_message_id=quoted,

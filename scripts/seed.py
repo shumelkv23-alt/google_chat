@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from app.db.models import ChatMessage
 from app.db.session import AsyncSessionLocal, engine
+from app.services.hashing import sha256_hex
 
 SEED_MESSAGES = [
     "Открыли вакансию питониста, до 300k на руки, ищем под команду Платформа",
@@ -43,6 +44,7 @@ async def _run() -> None:
                     author_id="users/seed-author",
                     author_name="Seed Author",
                     text=msg_text,
+                    text_hash=sha256_hex(msg_text),
                     created_at=base_time + timedelta(hours=i),
                     source="chat_a",
                 )

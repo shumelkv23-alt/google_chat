@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from openai import AsyncOpenAI
-from sqlalchemy import bindparam, exists, func, select, text, update
+from sqlalchemy import exists, func, select, text, tuple_, update
 
 from app.config import settings
 from app.db.models import ChatMessage, ChatMessageEmbedding
@@ -510,22 +510,25 @@ async def _mark_processed_conditional(
     (б) не изменились с момента fetch (text_hash совпал), (в) не удалены.
     Не прошедшие проверку остаются pending — следующий тик возьмёт их со
     свежим текстом и переразберёт."""
-    params = [
-        {"b_id": mid, "b_hash": snapshot[mid]} for mid in ok_ids if mid in snapshot
-    ]
-    if not params:
+    pairs = [(mid, snapshot[mid]) for mid in ok_ids if mid in snapshot]
+    if not pairs:
         return
+    # Один UPDATE по парам (id, text_hash): сообщение помечается, только если его
+    # содержимое не изменилось с момента fetch. tuple_-IN вместо executemany —
+    # ORM-executemany по сущности уходит в bulk-update-by-PK и конфликтует с
+    # дополнительным WHERE. synchronize_session=False: ORM identity map здесь
+    # не используется, синхронизировать нечего.
     stmt = (
         update(ChatMessage)
         .where(
-            ChatMessage.id == bindparam("b_id"),
-            ChatMessage.text_hash == bindparam("b_hash"),
+            tuple_(ChatMessage.id, ChatMessage.text_hash).in_(pairs),
             ChatMessage.is_deleted.is_(False),
         )
         .values(process_status="processed", is_processed=True)
+        .execution_options(synchronize_session=False)
     )
     async with AsyncSessionLocal() as session:
-        await session.execute(stmt, params)
+        await session.execute(stmt)
         await session.commit()
 
 

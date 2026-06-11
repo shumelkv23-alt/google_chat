@@ -65,10 +65,11 @@ _SYSTEM_FULL = """\
 
 Поля fields: title, salary_min, salary_max, currency, status, owner, team,
 description, location, additional_info.
-- description — суть роли: что за позиция, чем заниматься.
+- description — ЧЕМ заниматься, суть роли. Нет сути роли — НЕ выдумывай.
 - location — где работать: "удалёнка", "Москва, офис", "гибрид, СПб".
-- additional_info — полезные детали, не вошедшие в отдельные поля (грейд,
-  уровень языка, формат работы, бенефиты). НЕ дублируй сюда description.
+- additional_info — требования и условия: уровень языка, грейд, опыт, формат,
+  бенефиты. Пример: "нужен английский B2, есть ДМС и релокация" →
+  additional_info = "английский B2; ДМС; релокация" (НЕ в description!).
 Если поле не упомянуто — НЕ включай его в fields.
 confidence: 0.0–1.0 — насколько ты уверен в action и entity_ref.
 Если action != "none", confidence должен быть > 0.3.\

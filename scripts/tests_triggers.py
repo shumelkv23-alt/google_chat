@@ -13,6 +13,7 @@ from app.config import settings
 from app.db.models import ChatMessage
 from app.db.session import AsyncSessionLocal, engine
 from app.logger import setup_logging
+from app.services.hashing import sha256_hex
 from app.services.batch_processor import flush_due_batches
 
 SPACE = "spaces/AAQAmmGOtCo"
@@ -47,6 +48,7 @@ async def _seed(prefix: str, n: int, age_seconds: int) -> None:
                     author_id="users/seed-author",
                     author_name="Seed Author",
                     text=f"Открыли вакансию инженера №{i}, {100 + i}k",
+                    text_hash=sha256_hex(f"Открыли вакансию инженера №{i}, {100 + i}k"),
                     created_at=created + timedelta(seconds=i),
                     source="chat_a",
                 )

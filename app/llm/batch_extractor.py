@@ -90,9 +90,12 @@ action: create | update | close | none
 
 fields: title, salary_min, salary_max, currency, status, owner, team,
 description, location, additional_info.
-- description — суть роли; location — где работать (удалёнка/город/офис);
-  additional_info — полезные детали, не вошедшие в отдельные поля (грейд,
-  уровень языка, формат, бенефиты). НЕ дублируй description в additional_info.
+- description — ЧЕМ заниматься, суть роли (напр. «разработка биллинга на Go»).
+  Если сути роли в сообщении нет — НЕ выдумывай description.
+- location — где работать (удалёнка / город / офис / гибрид).
+- additional_info — требования и условия: уровень языка, грейд, опыт, формат,
+  бенефиты. Пример: сообщение «нужен английский B2, есть ДМС и релокация» →
+  additional_info = "английский B2; ДМС; релокация" (НЕ в description!).
 Поле не упомянуто — НЕ включай его (не выдумывай). salary_* — числами.
 entity_ref — короткая идентификационная фраза (title вакансии).
 confidence: 0.0–1.0. Если action != "none", confidence должен быть > 0.3.\

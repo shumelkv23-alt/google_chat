@@ -1,8 +1,3 @@
-"""Тест триггеров пачки: count (>=BATCH_SIZE) и timeout (старше таймаута).
-
-Запуск:
-    python -m scripts.test_triggers
-"""
 
 import asyncio
 from datetime import datetime, timedelta, timezone

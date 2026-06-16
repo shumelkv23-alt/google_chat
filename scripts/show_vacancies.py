@@ -1,8 +1,4 @@
-"""Показать вакансии и их ревизии (проверка результатов теста).
 
-Запуск:
-    python -m scripts.show_vacancies
-"""
 
 import asyncio
 

@@ -1,10 +1,4 @@
-"""Засеять chat_messages тестовыми сообщениями про вакансии.
 
-Полезно для отладки RAG/extraction без живого Pub/Sub.
-
-Запуск:
-    python -m scripts.seed
-"""
 
 import asyncio
 from datetime import datetime, timedelta, timezone

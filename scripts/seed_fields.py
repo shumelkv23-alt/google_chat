@@ -1,12 +1,3 @@
-"""Засеять сценарий для новых полей вакансии: location + additional_info.
-
-Тред Java: первое сообщение задаёт локацию (Москва, офис) и доп.детали
-(английский B2, ДМС, релокация); follow-up меняет формат на гибрид —
-проверяем, что location обновляется (семантика замены).
-
-Запуск:
-    python -m scripts.seed_fields
-"""
 
 import asyncio
 from datetime import datetime, timedelta, timezone

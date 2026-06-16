@@ -1,23 +1,3 @@
-"""Нагрузочный e2e-тест batch-режима через HTTP-приём (уровень B).
-
-Шлёт ~100 фейковых Pub/Sub-push на /chat/pubsub-push (как делает реальный
-Pub/Sub), затем мониторит БД, пока фоновый тикер не разберёт всё (pending → 0).
-
-Состав — реалистичная смесь: независимые объявления, follow-up'ы в тредах,
-правки (updated), цитаты, закрытия и мусор. Проверяет весь путь: HTTP-приём →
-persist → маршрутизация → тикер → флаш → mark, плюс batch-фичи (связывание,
-история [hN], бисекция при необходимости).
-
-Предусловия:
-  - сервер поднят локально в batch-режиме (PROCESSING_MODE=batch),
-    напр.: PROCESSING_MODE=batch BATCH_SIZE=20 uvicorn app.main:app --port 8000
-  - skip_jwt_validation=True (иначе push отклонит JWT-проверка)
-
-Запуск:
-    python -m scripts.load_test
-    python -m scripts.load_test --url http://localhost:8000 --timeout 600
-"""
-
 import argparse
 import asyncio
 import base64
@@ -39,7 +19,7 @@ _CE = {
     "deleted": "google.workspace.chat.message.v1.deleted",
 }
 
-# Роли для независимых объявлений — каждое создаёт отдельную вакансию.
+
 _ROLES = [
     ("Python-разработчика", "Платформа", 300),
     ("Go-разработчика", "Биллинг", 280),
@@ -286,9 +266,137 @@ async def _run(url: str, timeout: int) -> None:
     await engine.dispose()
 
 
+async def _clean() -> None:
+    """Удалить все данные spaces/LOADTEST из БД."""
+    # Один DO-блок: всё внутри PostgreSQL, без биндинга UUID-массивов через asyncpg.
+    # Порядок важен: сначала все ревизии вакансий (FK), потом сами вакансии,
+    # потом сообщения (эмбеддинги каскадятся).
+    sql = text(
+        """
+        DO $$
+        DECLARE
+            vac_ids UUID[];
+        BEGIN
+            SELECT ARRAY_AGG(DISTINCT vr.vacancy_id)
+            INTO vac_ids
+            FROM vacancy_revisions vr
+            JOIN chat_messages m ON m.id = vr.source_message_id
+            WHERE m.space_id = 'spaces/LOADTEST';
+
+            IF vac_ids IS NOT NULL THEN
+                DELETE FROM vacancy_revisions WHERE vacancy_id = ANY(vac_ids);
+                UPDATE vacancies SET last_message_id = NULL WHERE id = ANY(vac_ids);
+                DELETE FROM vacancies WHERE id = ANY(vac_ids);
+            END IF;
+
+            DELETE FROM chat_messages WHERE space_id = 'spaces/LOADTEST';
+
+            -- Подчистить осиротевшие вакансии (без ревизий) от предыдущих запусков.
+            DELETE FROM vacancies
+            WHERE id NOT IN (SELECT DISTINCT vacancy_id FROM vacancy_revisions);
+        END $$;
+        """
+    )
+    async with AsyncSessionLocal() as s:
+        async with s.begin():
+            await s.execute(sql)
+
+    # Проверяем что всё чисто
+    async with AsyncSessionLocal() as s:
+        msgs = (await s.execute(
+            text("SELECT count(*) FROM chat_messages WHERE space_id = 'spaces/LOADTEST'")
+        )).scalar()
+        vacs = (await s.execute(
+            text("SELECT count(*) FROM vacancies WHERE is_deleted = false")
+        )).scalar()
+    print(f"После очистки: сообщений LOADTEST={msgs}, вакансий в БД={vacs}")
+    await engine.dispose()
+
+
+async def _diagnose() -> None:
+    """Полный расклад по ревизиям и сообщениям в LOADTEST-спейсе."""
+    async with AsyncSessionLocal() as s:
+        # 1. Ревизии по типу действия
+        rows = (
+            await s.execute(
+                text(
+                    """
+                    SELECT vr.action, count(*) AS cnt
+                    FROM vacancy_revisions vr
+                    JOIN chat_messages m ON m.id = vr.source_message_id
+                    WHERE m.space_id = :sp
+                    GROUP BY vr.action
+                    ORDER BY cnt DESC
+                    """
+                ),
+                {"sp": SPACE},
+            )
+        ).fetchall()
+        print("\n=== Ревизии по action ===")
+        for r in rows:
+            print(f"  {r.action:<10} {r.cnt}")
+
+        # 2. Каждая ревизия с текстом источника
+        rows = (
+            await s.execute(
+                text(
+                    """
+                    SELECT
+                      v.title,
+                      vr.action,
+                      m.message_id,
+                      left(m.text, 70) AS msg_text,
+                      vr.changed_field
+                    FROM vacancy_revisions vr
+                    JOIN vacancies v ON v.id = vr.vacancy_id
+                    JOIN chat_messages m ON m.id = vr.source_message_id
+                    WHERE m.space_id = :sp
+                    ORDER BY vr.created_at
+                    """
+                ),
+                {"sp": SPACE},
+            )
+        ).fetchall()
+        print(f"\n=== Все {len(rows)} ревизий ===")
+        for r in rows:
+            changed = f" [{r.changed_field}]" if r.changed_field else ""
+            print(f"  [{r.action:<7}]{changed} {r.title!r:35} ← {r.msg_text!r}")
+
+        # 3. Сообщения без ревизий (не попали ни в одну вакансию)
+        rows = (
+            await s.execute(
+                text(
+                    """
+                    SELECT m.message_id, left(m.text, 70) AS text, m.process_status
+                    FROM chat_messages m
+                    WHERE m.space_id = :sp
+                      AND NOT EXISTS (
+                          SELECT 1 FROM vacancy_revisions vr
+                          WHERE vr.source_message_id = m.id
+                      )
+                    ORDER BY m.created_at
+                    """
+                ),
+                {"sp": SPACE},
+            )
+        ).fetchall()
+        print(f"\n=== Сообщения без ревизий: {len(rows)} ===")
+        for r in rows:
+            print(f"  [{r.process_status}] {r.message_id:35} {r.text!r}")
+
+    await engine.dispose()
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--url", default="http://localhost:8000")
     p.add_argument("--timeout", type=int, default=600)
+    p.add_argument("--diagnose", action="store_true", help="показать расклад по БД без запуска теста")
+    p.add_argument("--clean", action="store_true", help="удалить данные spaces/LOADTEST из БД")
     args = p.parse_args()
-    asyncio.run(_run(args.url, args.timeout))
+    if args.diagnose:
+        asyncio.run(_diagnose())
+    elif args.clean:
+        asyncio.run(_clean())
+    else:
+        asyncio.run(_run(args.url, args.timeout))

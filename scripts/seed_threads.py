@@ -1,8 +1,3 @@
-"""Засеять сценарии тредов и цитат для теста batch-привязки.
-
-Запуск:
-    python -m scripts.seed_threads
-"""
 
 import asyncio
 from datetime import datetime, timedelta, timezone

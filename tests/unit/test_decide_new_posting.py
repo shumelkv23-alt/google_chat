@@ -1,13 +1,4 @@
-"""Юнит-тесты _decide_new_posting — связка regex + LLM.
 
-Логика развилки «новый найм или правка»:
-- LLM уверен (confidence >= _POSTING_CONFIDENCE_MIN) → доверяем вердикту LLM,
-  regex игнорируется;
-- LLM не уверен (confidence < порога) → падаем на regex-эвристику по тексту.
-
-Подменяем только LLM (classify_new_posting); regex (is_new_posting) — настоящий,
-он чистый и быстрый. Так тест проверяет именно склейку двух сигналов.
-"""
 
 from unittest.mock import AsyncMock
 

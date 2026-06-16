@@ -1,13 +1,4 @@
-"""Юнит-тесты batch-экстрактора v2 с подменой LLM-вызова.
 
-Проверяем НАШУ логику вокруг LLM (сам LLM мокаем, как в test_prefilter):
-- _validate_coverage: отброс галлюцинаций индексов и дублей (B9);
-- разбор link_to_index / link_to_vacancy_ref из ответа (B8);
-- самопочинка парсинга: при битом JSON ретрай показывает модели её ошибку;
-- форматирование контекста: метки vN у вакансий и [hN] у истории (B7).
-
-Патчим chat там, где он используется: app.llm.batch_extractor.chat.
-"""
 
 import json
 from datetime import datetime

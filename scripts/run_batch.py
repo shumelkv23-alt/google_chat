@@ -1,12 +1,3 @@
-"""Разовый прогон batch-конвейера (ручной тест).
-
-Зовёт flush_due_batches() один раз — разбирает все созревшие пачки
-(по count или таймауту) и печатает состояние до/после + список вакансий.
-
-Запуск:
-    python -m scripts.run_batch
-"""
-
 import asyncio
 
 from sqlalchemy import text

@@ -1,8 +1,3 @@
-"""Тест edit/delete в batch-режиме (пункты 10-11).
-
-Запуск:
-    python -m scripts.test_edit
-"""
 
 import asyncio
 from datetime import datetime, timezone

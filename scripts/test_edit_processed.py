@@ -1,8 +1,4 @@
-"""Тест edit/delete УЖЕ обработанных сообщений (которые стали вакансиями).
 
-Запуск:
-    python -m scripts.test_edit_processed
-"""
 
 import asyncio
 from datetime import datetime, timezone

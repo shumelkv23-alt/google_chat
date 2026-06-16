@@ -106,6 +106,14 @@ async def handle_edit_batch(msg: IncomingMessage) -> None:
             row.text = msg.text
             row.text_hash = sha256_hex(msg.text)
             row.is_edited = True
+            # Сносим вектор: он мог посчитаться на прошлом (упавшем) флаше и теперь
+            # устарел. Без этого идемпотентный _embed_batch на следующем тике
+            # увидит существующий вектор и применит к НОВОМУ тексту старый.
+            await session.execute(
+                delete(ChatMessageEmbedding).where(
+                    ChatMessageEmbedding.message_id == row.id
+                )
+            )
             if row.process_status == "failed":
                 # Возврат из dead-letter: человек поправил текст — пробуем заново.
                 row.process_status = "pending"

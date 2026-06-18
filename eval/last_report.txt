@@ -1,0 +1,66 @@
+
+Матрица: усреднено по 3 прогон(ам), ожидается вакансий: 12
+model                   mode         vac    group   status  fields   skF1   noise  calls  sec    
+-------------------------------------------------------------------------------------------------
+deepseek-v4-flash       batch        12.0   12.0    12.0    21.3/27  0.57   0.0    4.7    108.1  
+deepseek-v4-pro         batch        12.0   12.0    12.0    23.3/27  0.69   0.0    3.7    315.2  
+qwen3.7-plus            batch        11.3   10.7    10.7    19.7/24  0.77   0.0    3.0    210.7  
+gemini-3.1-flash-lite   batch        12.0   12.0    12.0    22.0/27  0.80   0.0    5.3    25.8   
+
+Расхождения с эталоном (частота по прогонам):
+
+[deepseek-v4-flash · batch]
+  - analyst_data: additional без ['sql', 'tableau']  (×3/3)
+  - python_dataeng: additional без ['spark', 'airflow']  (×2/3)
+  - data_scientist: role_category='data'≠ml  (×2/3)
+  - frontend: skills F1=0.50 got=['typescript', 'next.js']  (×2/3)
+  - python_dataeng: skills F1=0.00 got=['spark', 'airflow']  (×2/3)
+  - python_dataeng: role_category=None≠data  (×1/3)
+  - backend_py: role_category=None≠backend  (×1/3)
+  - frontend: role_category=None≠frontend  (×1/3)
+  - backend_py: skills F1=0.00 got=[]  (×1/3)
+  - devops: role_category=None≠devops  (×1/3)
+  - data_scientist: additional без ['nlp']  (×1/3)
+  - python_ml: skills F1=0.00 got=[]  (×1/3)
+  - python_ml: role_category=None≠ml  (×1/3)
+  - frontend: skills F1=0.80 got=['typescript', 'next.js', 'react']  (×1/3)
+  - python_dataeng: skills F1=0.50 got=['spark', 'airflow', 'python']  (×1/3)
+  - analyst_data: role_category=None≠analyst  (×1/3)
+  - go: skills F1=0.00 got=[]  (×1/3)
+  - sys_analyst: role_category=None≠analyst  (×1/3)
+  - frontend: additional без ['typescript', 'next']  (×1/3)
+  - backend_py2: skills F1=0.00 got=[]  (×1/3)
+  - backend_py2: role_category=None≠backend  (×1/3)
+
+[deepseek-v4-pro · batch]
+  - frontend: skills F1=0.50 got=['typescript', 'next.js']  (×3/3)
+  - python_dataeng: skills F1=0.00 got=['spark', 'airflow']  (×3/3)
+  - analyst_data: additional без ['sql', 'tableau']  (×3/3)
+  - python_dataeng: additional без ['spark', 'airflow']  (×2/3)
+  - data_scientist: role_category='data'≠ml  (×2/3)
+  - frontend: additional без ['typescript', 'next']  (×2/3)
+  - backend_py2: skills F1=0.00 got=[]  (×1/3)
+  - data_scientist: role_category=None≠ml  (×1/3)
+  - data_scientist: additional без ['nlp']  (×1/3)
+
+[qwen3.7-plus · batch]
+  - data_scientist: role_category='data'≠ml  (×3/3)
+  - analyst_data: additional без ['sql', 'tableau']  (×3/3)
+  - backend_py2: группировка провалена  (×2/3)
+  - frontend: skills F1=0.50 got=['typescript', 'next.js']  (×2/3)
+  - backend_py: группировка провалена  (×2/3)
+  - python_dataeng: additional без ['spark', 'airflow']  (×2/3)
+  - python_dataeng: skills F1=0.50 got=['python', 'spark', 'airflow']  (×2/3)
+  - data_scientist: additional без ['nlp']  (×2/3)
+  - frontend: additional без ['typescript', 'next']  (×2/3)
+  - python_dataeng: skills F1=0.00 got=['spark', 'airflow']  (×1/3)
+  - frontend: skills F1=0.80 got=['react', 'typescript', 'next.js']  (×1/3)
+
+[gemini-3.1-flash-lite · batch]
+  - python_dataeng: additional без ['spark', 'airflow']  (×3/3)
+  - data_scientist: role_category='data'≠ml  (×3/3)
+  - frontend: additional без ['typescript', 'next']  (×3/3)
+  - python_dataeng: skills F1=0.00 got=['spark', 'airflow']  (×3/3)
+  - data_scientist: additional без ['nlp']  (×3/3)
+  - analyst_data: additional без ['sql', 'tableau']  (×3/3)
+  - frontend: skills F1=0.80 got=['react', 'typescript', 'next.js']  (×3/3)

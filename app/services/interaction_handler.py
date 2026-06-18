@@ -23,7 +23,9 @@ from app.services.charts import (
     build_salary_chart_config,
     create_chart_url,
 )
+from app.services.clusters import role_salary_matrix, salary_by_company
 from app.services.rag import build_rag_context
+from app.services.trends import rising_falling, top_skills
 
 _LIST_RECENT_LIMIT = 10
 _LIST_RECENT_DEFAULT_DAYS = 7
@@ -52,7 +54,119 @@ async def handle_query(
         return await _handle_chart(intent)
     if intent.kind == "salary_chart":
         return await _handle_salary_chart(intent)
+    if intent.kind == "skill_demand":
+        return await _handle_skill_demand(intent)
+    if intent.kind == "trends":
+        return await _handle_trends(intent)
+    if intent.kind == "salary_by_company":
+        return await _handle_salary_by_company(intent)
+    if intent.kind == "role_matrix":
+        return await _handle_role_matrix(intent)
     return await _handle_search(query, conversation)
+
+
+_SKILL_DEMAND_LIMIT = 15
+_TREND_TOP = 5
+
+
+async def _handle_skill_demand(intent: Intent) -> tuple[dict, str]:
+    """Востребованность технологий: топ или хвост (least_demanded)."""
+    data = await top_skills(
+        status=intent.status,
+        days=intent.days,
+        limit=_SKILL_DEMAND_LIMIT,
+        ascending=intent.least_demanded,
+    )
+    if not data:
+        text = "Пока нет данных о технологиях в вакансиях."
+        return {"text": text}, text
+
+    title = (
+        "Менее востребованные технологии"
+        if intent.least_demanded
+        else "Самые востребованные технологии"
+    )
+    config = build_chart_config(data, chart_type="bar", title=title)
+    url = await create_chart_url(config)
+    if url is None:
+        text = _format_chart_fallback(data, title)
+        return {"text": text}, text
+
+    summary = ", ".join(f"{skill}: {cnt}" for skill, cnt in data[:_TREND_TOP])
+    card_payload = build_chart_card(title=title, image_url=url, summary=summary)
+    return card_payload, f"[{title.lower()}] {summary}"
+
+
+async def _handle_trends(intent: Intent) -> tuple[dict, str]:
+    """Восходящие / нисходящие тренды спроса (месяц к месяцу)."""
+    result = await rising_falling(bucket="month", status=intent.status)
+    rising, falling = result["rising"], result["falling"]
+    if not rising and not falling:
+        text = "Пока недостаточно данных, чтобы говорить о трендах."
+        return {"text": text}, text
+
+    lines = ["Тренды спроса на технологии (месяц к месяцу):"]
+    if rising:
+        lines.append(
+            "📈 Растут: " + ", ".join(_format_trend(e) for e in rising[:_TREND_TOP])
+        )
+    if falling:
+        lines.append(
+            "📉 Падают: " + ", ".join(_format_trend(e) for e in falling[:_TREND_TOP])
+        )
+    text = "\n".join(lines)
+    return {"text": text}, text
+
+
+async def _handle_salary_by_company(intent: Intent) -> tuple[dict, str]:
+    """Медианная зарплата в разрезе компаний."""
+    rows = await salary_by_company(status=intent.status)
+    # Для графика берём только компании с верхней планкой (median_max).
+    data = [
+        (r["company"], int(r["median_max"]))
+        for r in rows
+        if r.get("median_max") is not None
+    ][:_SKILL_DEMAND_LIMIT]
+    if not data:
+        text = "Нет данных о зарплатах по компаниям."
+        return {"text": text}, text
+
+    title = "Медианная зарплата по компаниям"
+    config = build_chart_config(data, chart_type="bar", title=title)
+    url = await create_chart_url(config)
+    if url is None:
+        text = _format_chart_fallback(data, title)
+        return {"text": text}, text
+
+    summary = ", ".join(f"{company}: {val}" for company, val in data[:_TREND_TOP])
+    card_payload = build_chart_card(title=title, image_url=url, summary=summary)
+    return card_payload, f"[зарплаты по компаниям] {summary}"
+
+
+async def _handle_role_matrix(intent: Intent) -> tuple[dict, str]:
+    """Матрица «специальность × грейд» с медианной зарплатой."""
+    rows = await role_salary_matrix(status=intent.status, days=intent.days)
+    if not rows:
+        text = "Нет данных по специальностям и грейдам."
+        return {"text": text}, text
+
+    lines = ["Зарплаты по специальностям и грейдам (медиана):"]
+    for r in rows:
+        median = r.get("median_salary")
+        median_str = str(int(median)) if median is not None else "?"
+        lines.append(
+            f"- {r['role_category']} / {r['seniority']}: "
+            f"{median_str} ({r['vacancies']} вак.)"
+        )
+    text = "\n".join(lines)
+    return {"text": text}, text
+
+
+def _format_trend(entry: dict) -> str:
+    """Технология + динамика: «python (3→6)» или «rust (новый: 4)»."""
+    if entry["growth"] is None:
+        return f"{entry['skill']} (новый: {entry['cur']})"
+    return f"{entry['skill']} ({entry['prev']}→{entry['cur']})"
 
 
 async def _handle_search(

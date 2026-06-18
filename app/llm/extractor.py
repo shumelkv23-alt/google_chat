@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field, field_validator
 from app.config import settings
 from app.llm.client import chat
 from app.logger import logger
+from app.services.company_normalizer import normalize_company
+from app.services.role_normalizer import normalize_role
+from app.services.seniority_normalizer import normalize_seniority
+from app.services.skill_normalizer import normalize_skills
 
 _SYSTEM_BASE = """\
 Ты — парсер сообщений о вакансиях в корпоративном чате.
@@ -14,12 +18,23 @@ _SYSTEM_BASE = """\
 
 Поля action: create | update | close | none
 Поля fields: title, salary_min, salary_max, currency, status, owner, team,
-description, location, additional_info.
+description, location, additional_info, company, seniority, role_category, skills.
 - description — суть роли: что за позиция, чем заниматься.
 - location — где работать: "удалёнка", "Москва, офис", "гибрид, СПб".
 - additional_info — полезные детали, не вошедшие в отдельные поля (грейд,
   уровень языка, формат работы, бенефиты). НЕ дублируй сюда description.
-Если поле не упомянуто — НЕ включай его в fields (не выдумывай).\
+- company — компания-работодатель, если названа ("ищем в Авито" → "Авито").
+- seniority — грейд, РОВНО ОДНО из: intern, junior, middle, senior, lead.
+- role_category — категория роли, РОВНО ОДНО из: backend, frontend, fullstack,
+  mobile, data, ml, devops, qa, design, pm, analyst, security, other.
+- skills — МАССИВ конкретных технологий из требований ["python","docker"].
+  Только инструменты/языки/фреймворки, НЕ общие слова ("разработка").
+Если поле не упомянуто — НЕ включай его в fields (не выдумывай).
+
+Пример: "Ищем senior python-разработчика в Авито, бэкенд, нужен postgres и docker, удалёнка"
+{"action":"create","entity_ref":"Python-разработчик","confidence":0.9,
+ "fields":{"title":"Python-разработчик","company":"Авито","seniority":"senior",
+ "role_category":"backend","skills":["python","postgresql","docker"],"location":"удалёнка"}}\
 """
 
 _SYSTEM_FULL = """\
@@ -70,6 +85,11 @@ description, location, additional_info.
 - additional_info — требования и условия: уровень языка, грейд, опыт, формат,
   бенефиты. Пример: "нужен английский B2, есть ДМС и релокация" →
   additional_info = "английский B2; ДМС; релокация" (НЕ в description!).
+- company — компания-работодатель, если названа.
+- seniority — грейд, РОВНО ОДНО из: intern, junior, middle, senior, lead.
+- role_category — РОВНО ОДНО из: backend, frontend, fullstack, mobile, data, ml,
+  devops, qa, design, pm, analyst, security, other.
+- skills — МАССИВ конкретных технологий ["python","docker"]; не общие слова.
 Если поле не упомянуто — НЕ включай его в fields.
 confidence: 0.0–1.0 — насколько ты уверен в action и entity_ref.
 Если action != "none", confidence должен быть > 0.3.\
@@ -104,11 +124,54 @@ def _coerce_int(value: Any) -> int | None:
     return result
 
 
+# Колонка status — под check-constraint (open/closed/on_hold/filled). LLM же
+# отдаёт синонимы ("active", "открыта", "on hold"). Без нормализации чужой статус
+# роняет вставку вакансии с CheckViolation. Мапим известное, неизвестное —
+# выкидываем (тогда сработает дефолт open / статус задаст action close).
+_ALLOWED_STATUS = {"open", "closed", "on_hold", "filled"}
+_STATUS_SYNONYMS = {
+    "active": "open",
+    "opened": "open",
+    "открыта": "open",
+    "открыт": "open",
+    "открытая": "open",
+    "открыто": "open",
+    "close": "closed",
+    "закрыта": "closed",
+    "закрыт": "closed",
+    "закрытая": "closed",
+    "закрыто": "closed",
+    "on hold": "on_hold",
+    "hold": "on_hold",
+    "paused": "on_hold",
+    "на паузе": "on_hold",
+    "приостановлена": "on_hold",
+    "заполнена": "filled",
+    "заполнен": "filled",
+    "укомплектована": "filled",
+}
+
+
 class ExtractionResult(BaseModel):
     action: Literal["create", "update", "close", "none"]
     entity_ref: str = ""
     fields: dict[str, Any] = Field(default_factory=dict)
     confidence: float = 0.0
+
+    @field_validator("entity_ref", mode="before")
+    @classmethod
+    def _coerce_entity_ref(cls, value: Any) -> str:
+        """Для action=none модель законно отдаёт entity_ref: null. Тип str это
+        отверг бы → валидный item выкидывался бы как битый (а в batch — застревал
+        бы pending и крутил лишние флаши). Любое не-строковое → пустая строка."""
+        return value if isinstance(value, str) else ""
+
+    @field_validator("fields", mode="before")
+    @classmethod
+    def _coerce_fields(cls, value: Any) -> dict:
+        """Модель иногда отдаёт fields: null (особенно для action=none). Тип dict
+        это отверг бы и ронял весь item — приводим не-словарь к пустому dict."""
+        return value if isinstance(value, dict) else {}
 
     @field_validator("fields", mode="after")
     @classmethod
@@ -124,6 +187,58 @@ class ExtractionResult(BaseModel):
                 cleaned.pop(key)
             else:
                 cleaned[key] = number
+        return cleaned
+
+    @field_validator("fields", mode="after")
+    @classmethod
+    def _normalize_status(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        """Привести status к разрешённому набору; неизвестный — убрать."""
+        if "status" not in fields:
+            return fields
+        cleaned = dict(fields)
+        raw = cleaned["status"]
+        norm = raw.strip().lower() if isinstance(raw, str) else None
+        if norm in _ALLOWED_STATUS:
+            cleaned["status"] = norm
+        elif norm in _STATUS_SYNONYMS:
+            cleaned["status"] = _STATUS_SYNONYMS[norm]
+        else:
+            cleaned.pop("status")
+        return cleaned
+
+    @field_validator("fields", mode="after")
+    @classmethod
+    def _normalize_skills_field(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        """skills: канонизировать стек. Пустой результат убираем — иначе update
+        с пустым массивом затёр бы уже известный стек (семантика замены)."""
+        if "skills" not in fields:
+            return fields
+        cleaned = dict(fields)
+        skills = normalize_skills(cleaned["skills"])
+        if skills:
+            cleaned["skills"] = skills
+        else:
+            cleaned.pop("skills")
+        return cleaned
+
+    @field_validator("fields", mode="after")
+    @classmethod
+    def _normalize_categorical(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        """seniority/role_category/company → канон; неизвестное/пустое убираем,
+        чтобы не писать в БД мусорные значения и не дробить разрезы аналитики."""
+        cleaned = dict(fields)
+        for key, normalize in (
+            ("seniority", normalize_seniority),
+            ("role_category", normalize_role),
+            ("company", normalize_company),
+        ):
+            if key not in cleaned:
+                continue
+            norm = normalize(cleaned[key])
+            if norm:
+                cleaned[key] = norm
+            else:
+                cleaned.pop(key)
         return cleaned
 
 

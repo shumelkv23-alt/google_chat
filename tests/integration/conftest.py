@@ -149,6 +149,7 @@ _EMBED_OPENAI_MODULES = (
     "app.services.extraction",
     "app.services.batch_processor",
     "app.services.edits",
+    "app.services.rag",
 )
 
 

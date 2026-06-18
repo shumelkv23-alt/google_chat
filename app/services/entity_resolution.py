@@ -35,6 +35,10 @@ _FIELD_MAP = {
     "description": "description",
     "location": "location",
     "additional_info": "additional_info",
+    "company": "company",
+    "seniority": "seniority",
+    "role_category": "role_category",
+    "skills": "skills",
 }
 
 
@@ -439,6 +443,11 @@ async def _create_vacancy(
         description=fields.get("description"),
         location=fields.get("location"),
         additional_info=fields.get("additional_info"),
+        company=fields.get("company"),
+        seniority=fields.get("seniority"),
+        role_category=fields.get("role_category"),
+        # NOT NULL: пустой/отсутствующий стек → '{}', не None.
+        skills=fields.get("skills") or [],
         last_message_id=msg_uuid,
         embedding=embedding,
         confidence=result.confidence,

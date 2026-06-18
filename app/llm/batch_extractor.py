@@ -89,13 +89,18 @@ action: create | update | close | none
 - сомневаешься между create и update → ставь update.
 
 fields: title, salary_min, salary_max, currency, status, owner, team,
-description, location, additional_info.
+description, location, additional_info, company, seniority, role_category, skills.
 - description — ЧЕМ заниматься, суть роли (напр. «разработка биллинга на Go»).
   Если сути роли в сообщении нет — НЕ выдумывай description.
 - location — где работать (удалёнка / город / офис / гибрид).
 - additional_info — требования и условия: уровень языка, грейд, опыт, формат,
   бенефиты. Пример: сообщение «нужен английский B2, есть ДМС и релокация» →
   additional_info = "английский B2; ДМС; релокация" (НЕ в description!).
+- company — компания-работодатель, если названа.
+- seniority — грейд, РОВНО ОДНО из: intern, junior, middle, senior, lead.
+- role_category — РОВНО ОДНО из: backend, frontend, fullstack, mobile, data, ml,
+  devops, qa, design, pm, analyst, security, other.
+- skills — МАССИВ конкретных технологий ["python","docker"]; не общие слова.
 Поле не упомянуто — НЕ включай его (не выдумывай). salary_* — числами.
 entity_ref — короткая идентификационная фраза (title вакансии).
 confidence: 0.0–1.0. Если action != "none", confidence должен быть > 0.3.\

@@ -88,3 +88,105 @@ def test_normalize_salary_does_not_mutate_input_dict():
     ExtractionResult(action="update", fields=original)
 
     assert original == {"salary_min": "300к"}
+
+
+# Статус из LLM → разрешённый набор (open/closed/on_hold/filled). Чужой статус
+# иначе ронял бы вставку вакансии с CheckViolation.
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("open", "open"),
+        ("OPEN", "open"),  # регистр не важен
+        ("active", "open"),  # синоним → open (ловит найденный баг)
+        ("открыта", "open"),
+        ("closed", "closed"),
+        ("закрыта", "closed"),
+        ("on hold", "on_hold"),
+        ("заполнена", "filled"),
+    ],
+)
+def test_normalize_status_maps_to_allowed(raw, expected):
+    result = ExtractionResult(action="create", fields={"status": raw})
+
+    assert result.fields["status"] == expected
+
+
+@pytest.mark.parametrize("raw", ["в работе", "frozen", 42, None])
+def test_normalize_status_drops_unknown(raw):
+    # Неизвестный/нестроковый статус выкидывается → сработает дефолт open.
+    result = ExtractionResult(action="create", fields={"status": raw, "title": "X"})
+
+    assert "status" not in result.fields
+    assert result.fields["title"] == "X"  # остальные поля не трогаем
+
+
+@pytest.mark.parametrize("raw, expected", [(None, ""), (123, ""), ("Backend", "Backend")])
+def test_entity_ref_coerces_non_string_to_empty(raw, expected):
+    # action=none часто приходит с entity_ref: null — это не должно ронять разбор.
+    result = ExtractionResult(action="none", entity_ref=raw, confidence=0.0)
+
+    assert result.entity_ref == expected
+
+
+@pytest.mark.parametrize("raw", [None, "не словарь", 42])
+def test_fields_coerces_non_dict_to_empty(raw):
+    # Модель иногда отдаёт fields: null — item не должен падать на валидации.
+    result = ExtractionResult(action="none", fields=raw, confidence=0.0)
+
+    assert result.fields == {}
+
+
+# --- Обогащающие поля: skills / seniority / role_category / company ---------
+# LLM отдаёт их грязно (синонимы, дубли, регистр). Валидаторы канонизируют их на
+# границе модели — иначе аналитика трендов/кластеров дробится на синонимы.
+
+
+def test_normalize_skills_canonicalizes_and_dedups():
+    result = ExtractionResult(
+        action="create",
+        fields={"skills": ["Питон", "py", "PYTHON", "Docker"]},
+    )
+
+    assert result.fields["skills"] == ["python", "docker"]
+
+
+def test_normalize_skills_drops_when_empty_after_cleaning():
+    # Пустой стек не пишем — иначе update затёр бы уже известные технологии.
+    result = ExtractionResult(
+        action="update", fields={"skills": ["разработка", ""], "title": "X"}
+    )
+
+    assert "skills" not in result.fields
+    assert result.fields["title"] == "X"
+
+
+@pytest.mark.parametrize(
+    "field, raw, expected",
+    [
+        ("seniority", "джуниор", "junior"),
+        ("seniority", "Senior", "senior"),
+        ("role_category", "бэкенд", "backend"),
+        ("role_category", "machine learning", "ml"),
+        ("company", "ООО Яндекс", "Yandex"),
+    ],
+)
+def test_normalize_categorical_canonicalizes(field, raw, expected):
+    result = ExtractionResult(action="create", fields={field: raw})
+
+    assert result.fields[field] == expected
+
+
+@pytest.mark.parametrize(
+    "field, raw",
+    [
+        ("seniority", "архитектор"),
+        ("role_category", "непонятная роль"),
+        ("company", "   "),
+    ],
+)
+def test_normalize_categorical_drops_unknown(field, raw):
+    # Неизвестное/пустое выкидываем — не пишем мусор в БД и не дробим разрезы.
+    result = ExtractionResult(action="create", fields={field: raw, "title": "X"})
+
+    assert field not in result.fields
+    assert result.fields["title"] == "X"

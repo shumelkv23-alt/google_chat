@@ -14,7 +14,7 @@ from typing import Any
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -127,6 +127,18 @@ class Vacancy(Base):
     # Полезные детали, не вошедшие в отдельные поля (грейд, уровень языка,
     # формат, бенефиты). Семантика замены, как у остальных полей вакансии.
     additional_info: Mapped[str | None] = mapped_column(sa.Text)
+    # Аналитические оси (агрегатор многих компаний). Все извлекаются LLM и
+    # нормализуются на границе (см. app/services/*_normalizer.py).
+    # company — работодатель; seniority — intern|junior|middle|senior|lead;
+    # role_category — backend|frontend|data|ml|devops|qa|...; skills — стек.
+    company: Mapped[str | None] = mapped_column(sa.Text)
+    seniority: Mapped[str | None] = mapped_column(sa.Text)
+    role_category: Mapped[str | None] = mapped_column(sa.Text)
+    # Нормализованный стек технологий. NOT NULL с дефолтом '{}' — пустой массив
+    # вместо NULL упрощает unnest-агрегации трендов. Семантика замены.
+    skills: Mapped[list[str]] = mapped_column(
+        ARRAY(sa.Text), nullable=False, server_default=sa.text("'{}'")
+    )
     last_message_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), sa.ForeignKey("chat_messages.id")
     )
@@ -148,6 +160,10 @@ class Vacancy(Base):
             name="vacancies_status_check",
         ),
         sa.Index("ix_vacancies_status", "status"),
+        # Оконная аналитика (тренды/кластеры) режет по created_at.
+        sa.Index("ix_vacancies_created_at", sa.text("created_at DESC")),
+        # GIN под фильтр вакансий по технологии: skills @> ARRAY['python'].
+        sa.Index("ix_vacancies_skills", "skills", postgresql_using="gin"),
     )
 
 

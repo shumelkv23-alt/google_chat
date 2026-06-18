@@ -34,6 +34,10 @@ _REVERTABLE_FIELDS = {
     "description",
     "location",
     "additional_info",
+    "company",
+    "seniority",
+    "role_category",
+    "skills",
     "status",
 }
 

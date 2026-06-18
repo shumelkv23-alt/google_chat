@@ -7,7 +7,17 @@ from app.config import settings
 from app.llm.client import chat
 from app.logger import logger
 
-IntentKind = Literal["search", "count", "list_recent", "chart", "salary_chart"]
+IntentKind = Literal[
+    "search",
+    "count",
+    "list_recent",
+    "chart",
+    "salary_chart",
+    "skill_demand",
+    "trends",
+    "salary_by_company",
+    "role_matrix",
+]
 StatusFilter = Literal["open", "closed", "any"]
 GroupBy = Literal["team", "status", "owner"]
 ChartType = Literal["bar", "pie", "line"]
@@ -21,6 +31,8 @@ class Intent(BaseModel):
     status: StatusFilter = "any"
     group_by: Optional[GroupBy] = None
     chart_type: Optional[ChartType] = None
+    # skill_demand: запросили хвост (менее востребованные) вместо топа.
+    least_demanded: bool = False
 
 
 _SYSTEM = """\
@@ -34,6 +46,15 @@ _SYSTEM = """\
 - chart: распределение по группе ("график", "распределение", "покажи по командам/статусам/овнерам")
 - salary_chart: график зарплат по вакансиям ("график зарплат", "сколько платят", "зарплаты по позициям")
   Используй ТОЛЬКО если запрос явно про деньги/оклады/зарплаты — иначе chart.
+- skill_demand: востребованность технологий ("какие технологии в топе", "что чаще
+  всего ищут", "самые востребованные навыки", "топ стек"). Для запроса про РЕДКИЕ/
+  МЕНЕЕ востребованные ("какие технологии непопулярны") поставь least_demanded=true.
+- trends: динамика спроса во времени ("что растёт", "восходящие/нисходящие тренды",
+  "какие технологии набирают популярность", "что выходит из моды").
+- salary_by_company: зарплаты в разрезе компаний ("сколько платят по компаниям",
+  "зп по работодателям", "какая компания больше платит").
+- role_matrix: зарплата по роли и грейду ("сколько платят бэкендам", "зарплаты по
+  специальностям и грейдам", "сколько получает сеньор").
 
 Поля:
 - topic: тема/название для фильтра (опц., если упомянуто: "python", "тимлид")
@@ -77,7 +98,22 @@ _SYSTEM = """\
 {"kind":"salary_chart","status":"open"}
 
 Запрос: "зарплаты по python вакансиям"
-{"kind":"salary_chart","topic":"python","status":"open"}\
+{"kind":"salary_chart","topic":"python","status":"open"}
+
+Запрос: "какие технологии сейчас самые востребованные"
+{"kind":"skill_demand","status":"open"}
+
+Запрос: "какие навыки реже всего просят"
+{"kind":"skill_demand","status":"open","least_demanded":true}
+
+Запрос: "какие технологии набирают популярность"
+{"kind":"trends","status":"open"}
+
+Запрос: "сколько платят по разным компаниям"
+{"kind":"salary_by_company","status":"open"}
+
+Запрос: "зарплаты по специальностям и грейдам"
+{"kind":"role_matrix","status":"open"}\
 """
 
 

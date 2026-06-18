@@ -13,12 +13,17 @@ class Settings(BaseSettings):
     openai_api_key: str
     openai_embedding_model: str = "text-embedding-3-small"
 
-    # OpenRouter (все LLM-задачи)
+    # OpenRouter (все LLM-задачи).
+    # Модель извлечения/резолва вакансий выбрана по eval (eval/): на batch-режиме
+    # gemini-3.1-flash-lite дала 12/12 группировки, лучший skills-F1 и была в
+    # разы быстрее остальных. answer (ответ пользователю в RAG) — та же модель
+    # ради скорости интерактивного чата; eval её на этой задаче не мерил, при
+    # необходимости легко сменить. summarize (память диалога) пока на deepseek.
     openrouter_api_key: str = ""
-    openrouter_model_prefilter: str = "deepseek/deepseek-v4-flash"
-    openrouter_model_extract: str = "deepseek/deepseek-v4-flash"
-    openrouter_model_resolve: str = "deepseek/deepseek-v4-flash"
-    openrouter_model_answer: str = "deepseek/deepseek-v4-flash"
+    openrouter_model_prefilter: str = "google/gemini-3.1-flash-lite"
+    openrouter_model_extract: str = "google/gemini-3.1-flash-lite"
+    openrouter_model_resolve: str = "google/gemini-3.1-flash-lite"
+    openrouter_model_answer: str = "google/gemini-3.1-flash-lite"
     openrouter_model_summarize: str = "deepseek/deepseek-v4-flash"
 
     # Redis / Celery
@@ -49,9 +54,12 @@ class Settings(BaseSettings):
     skip_jwt_validation: bool = False
 
     # Обработка сообщений: режим пайплайна и параметры батча.
-    # per_message — текущий путь (одно сообщение за раз).
+    # per_message — одно сообщение за раз (старый путь, оставлен для отката).
     # batch — копим сообщения и разбираем пачкой одним большим LLM-контекстом.
-    processing_mode: Literal["per_message", "batch"] = "per_message"
+    # По умолчанию batch: на сложных данных он кроет per_message по точности
+    # (eval/: 12/12 группировки против 7/12), дешевле и быстрее. Откат на старый
+    # путь — сменить на "per_message".
+    processing_mode: Literal["per_message", "batch"] = "batch"
     # Порог пачки по количеству. В чате ~5-10 сообщений/день, поэтому держим
     # низким: дневной поток уходит одной связной пачкой (главный профит batch —
     # видеть родственные сообщения вместе), а триггер «по количеству» остаётся

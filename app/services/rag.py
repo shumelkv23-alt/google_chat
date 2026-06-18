@@ -45,10 +45,12 @@ async def _search(vec_str: str) -> tuple[list[dict], list[dict]]:
         LIMIT :kv
     """)
     async with AsyncSessionLocal() as session:
-        msgs = (await session.execute(msg_sql, {"k": _TOP_K_MESSAGES})).fetchall()
-        # ivfflat с lists=50 и probes=1 (дефолт) пропускает строки при малом количестве данных.
-        # Устанавливаем probes=lists чтобы обойти все кластеры — для десятков вакансий.
+        # ivfflat с lists=50 и probes=1 (дефолт) пропускает строки при малом
+        # количестве данных. Ставим probes=lists ДО обоих запросов, чтобы и
+        # сообщения, и вакансии обходили все кластеры (в чате ~5-10 сообщений/день,
+        # с probes=1 поиск по сообщениям молча возвращал бы пусто).
         await session.execute(text("SET ivfflat.probes = 50"))
+        msgs = (await session.execute(msg_sql, {"k": _TOP_K_MESSAGES})).fetchall()
         vacs = (await session.execute(vac_sql, {"kv": _TOP_K_VACANCIES})).fetchall()
     return [dict(r._mapping) for r in msgs], [dict(r._mapping) for r in vacs]
 
